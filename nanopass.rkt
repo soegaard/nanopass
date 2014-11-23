@@ -68,10 +68,10 @@
 ; structures representin terminals and nonterminals.
 
 (begin-for-syntax
-  (struct terminal    (name meta-vars prettifier)  #:prefab)
+  (struct terminal    (stx name meta-vars prettifier)  #:prefab)
   ; name is an identifier, meta-vars is a list of identifeirs and prettifier
   ; is a syntax-object representing an expression.
-  (struct nonterminal (name meta-vars productions) #:prefab)
+  (struct nonterminal (stx name meta-vars productions) #:prefab)
   ; productions is a list of syntax-objects of the follwing forms:
   ;   terminal-meta-var
   ;   nonterminal-meta-var
@@ -96,13 +96,13 @@
   
   (define-syntax-class terminals-clause-spec
     #:attributes (terminal) #:literals (=>)    
-    (pattern (name:id mvs:meta-vars)
+    (pattern (~and stx (name:id mvs:meta-vars))
              #:attr terminal  
-             (terminal #'name (attribute mvs.vars) #'identity))
-    (pattern (=> (name:id mvs:meta-vars) prettifier)
-             #:attr terminal  (terminal #'name (attribute mvs.vars) #'prettifier))
-    (pattern (name:id mvs:meta-vars => prettifier)
-             #:attr terminal  (terminal #'name (attribute mvs.vars) #'prettifier)))
+             (terminal #'stx #'name (attribute mvs.vars) #'identity))
+    (pattern (~and stx (=> (name:id mvs:meta-vars) prettifier))
+             #:attr terminal  (terminal #'stx #'name (attribute mvs.vars) #'prettifier))
+    (pattern (~and stx (name:id mvs:meta-vars => prettifier))
+             #:attr terminal  (terminal #'stx #'name (attribute mvs.vars) #'prettifier)))
   
   (define-syntax-class terminals-clause 
     #:attributes (terminals) #:literals (terminals)
@@ -119,9 +119,9 @@
   
   (define-syntax-class nonterminal-clause
     #:attributes (nonterminal)
-    (pattern (name:id mvs:meta-vars c:production-clause ...)
+    (pattern (~and stx (name:id mvs:meta-vars c:production-clause ...))
              #:attr nonterminal 
-             (nonterminal #'name (attribute mvs.vars) (attribute c.production))))
+             (nonterminal #'stx #'name (attribute mvs.vars) (attribute c.production))))
   
   (define-syntax-class lang-clause
     #:attributes (entry-name terminals nonterminal)
@@ -141,15 +141,18 @@
 ;; Various helpers
 (begin-for-syntax
   (define (qualified-name ctx prefix suffix [src ctx])
-    (format-id ctx "~a:~a" prefix suffix #:source src)))
+    (format-id ctx "~a:~a" prefix suffix #:source src))
+  
+  (define (qualified-struct-name ctx lang nt prod [src ctx])
+    (format-id ctx "~a:~a:~a" lang nt prod #:source src)))
 
 
 (define-syntax (define-language stx)
   (define (syntax-error error-msg) (raise-syntax-error 'define-langauge error-msg stx))
   (syntax-parse stx
-    [(define-language lang-name:id clause:lang-clause ...)
+    [(define-language language-name:id clause:lang-clause ...)
      ;; The components of the define-language construct are:
-     (define lang-name    (syntax-e #'lang-name))
+     (define lang-name    (syntax-e #'language-name))
      (define entry-names  (filter values (attribute clause.entry-name)))
      (define terminals    (apply append (filter values (attribute clause.terminals))))
      (define nonterminals (filter values (attribute clause.nonterminal)))
@@ -171,6 +174,24 @@
      
      ;; Ad 1) For each nonterminal production of the form (keyword . production-s-expression)
      ;;       we define a struct lang-name:keyword
+     ;; (define-language L (nt (mv ...) (keyword . production-s-expression) ...)
+     ;; will generate structs (struct L:nt:keyword f0 f1 f2 ...) where
+     ;; the number of fields are given by production-s-expression.
+     
+     (define struct-names
+       (for/list ([nt nonterminals])
+         (match nt
+           [(nonterminal nt-stx nt-name meta-vars productions)
+            (for/list ([prod productions])
+              ; TODO: only for productions that are keyword applications
+              (syntax-case prod ()
+                [(keyword . more)
+                 (begin
+                   (displayln #'keyword)
+                   (qualified-struct-name prod lang-name nt-name #'keyword))]
+                [_ #f]))]
+           [_ #f])))
+     (displayln (list 'define-language 'struct-names struct-names))
      
      (datum->syntax #'here
                     (list 'quote
@@ -191,7 +212,9 @@
         (if e0 e1 e2)
         (begin e* ... e)
         (lambda (x* ...) body)
-        (let ([x* e*] ...) body) (letrec ([x* e*] ...) body) (set! x e)
+        (let ([x* e*] ...) body) 
+        (letrec ([x* e*] ...) body) 
+        (set! x e)
         (pr e* ...)
         (call e e* ...)))
 
