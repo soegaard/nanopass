@@ -36,8 +36,16 @@
 ;   production-clause = terminal-meta-var
 ;                     | nonterminal-meta-var
 ;                     | production-s-expression
-;                     | (keyword . production-s-expression)
+;                     | (keyword . production-s-expr)
 
+;   production-s-expr = meta-variable
+;                     | (maybe meta-variable)
+;                     | (production-s-expr ellipsis)
+;                     | (production-s-expr ellipsis production-s-expr ... . prod-s-expr)
+;                     | (production-s-expr . production-s-expr)
+;                     | ()
+;  where meta-variable is either a terminal-meta-var or a nonterminal-meta-var possibly
+;  followed by a sequence of ?, * or digits.
 
 ; Notes:
 ;  1) The entry nonterminal-name must be specified in the language
@@ -47,7 +55,9 @@
 ;  5) prettifier is a procedure of one arguments used to unparse that terminal type
 ;  6) A keyword is a name that is neither a terminal-meta-var nor a nonterminal-meta-var
 ;     which must be matched exactly (i.e. a literal)
-;  
+;  7) Note that keywords can not appear in production-s-expression
+;  8) No "unknown" symbols can appear in production-s-expression 
+
 
 (require (for-syntax syntax/parse racket/match racket/list racket/syntax))
 
@@ -188,6 +198,15 @@
      (for ([nt nonterminals])
        (for ([v (nonterminal-meta-vars nt)])
          (register-meta-var v nt)))
+     ; At this point all meta variables are stored in meta-vars-ht.
+     (define (terminal-meta-var? v)
+       (cond [(meta-vars-ref v) => terminal?]
+             [else #f]))
+     (define (nonterminal-meta-var? v)
+       (cond [(meta-vars-ref v) => nonterminal?]
+             [else #f]))
+     
+     
      
      (define all-terminal-meta-vars    (append-map terminal-meta-vars terminals))
      ; (define all-nonterminal-meta-vars (append-map 
