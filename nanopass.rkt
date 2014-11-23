@@ -65,7 +65,7 @@
 
 ;;; STRUCTURES
 ; The define-language constructs parses its input into
-; structures representin terminals and nonterminals.
+; structures representing terminals and nonterminals.
 
 (begin-for-syntax
   (struct terminal    (stx name meta-vars prettifier)  #:prefab)
@@ -78,6 +78,7 @@
   ;   producition-s-expression
   ;   (keyword . production-s-expression)
   ; where keyword is neither type of meta var.
+  terminal-meta-vars
   )
 
 
@@ -166,6 +167,33 @@
          [(list)      (first nonterminals)]
          [(list name) name]
          [__ (raise-syntax-error 'define-language "only one entry is allowed" stx)]))
+     
+     ;; Check that all meta variables are associated with only one terminal or nonterminal
+     ; First we define a hash table that associates a meta variable to its terminal or nonterminal
+     (define meta-vars-ht (make-hash ))
+     (define (meta-vars-ref v) (hash-ref meta-vars-ht (syntax-e v) #f))
+     (define (meta-vars-set! v a) (hash-set! meta-vars-ht (syntax-e v) a))
+     ; The error message will highlight the second use of a meta variable 
+     (define (raise-meta-var-error v)
+       (raise-syntax-error 'define-language 
+                           "a meta variable can only be associated to one terminal or nonterminal"
+                           v))
+     (define (register-meta-var v a)
+       (cond [(meta-vars-ref v) (raise-meta-var-error v)]
+             [else              (meta-vars-set! v a)]))
+     ; Check them
+     (for ([t terminals])
+       (for ([v (terminal-meta-vars t)])
+         (register-meta-var v t)))
+     (for ([nt nonterminals])
+       (for ([v (nonterminal-meta-vars nt)])
+         (register-meta-var v nt)))
+     
+     (define all-terminal-meta-vars    (append-map terminal-meta-vars terminals))
+     ; (define all-nonterminal-meta-vars (append-map 
+
+     (display (list 'define-language 'all-terminal-meta-vars all-terminal-meta-vars))
+     
 
      ;; At this point we are ready to 
      ;;   1) define structures representing the nonterminals
