@@ -287,9 +287,9 @@
               (match (keywords-ref #'x)
                 [(list orig-nt ps)
                  ;; x is a keyword ...
-
                  
-
+                 
+                 
                  ;; In order to make later processing easier we 
                  ;; rewrite the s-exp such that  s-exp ...  becomes (ellipsis s-exp)
                  (define (maybe?    stx) (and (identifier? stx) (eq? (syntax-e stx) 'maybe)))
@@ -306,7 +306,7 @@
                        [(? syntax? s)       (recur (syntax-e s))]
                        [(list (? maybe?) (? meta-var?)) se]   ; todo: ntroduce maybe struct ?
                        [(cons (? maybe?) _) (raise-syntax-error 
-                                           'define-language "(maybe meta-var) expected" se)]
+                                             'define-language "(maybe meta-var) expected" se)]
                        [(list se0 (? ellipsis?)) (list (ellipsis (recur se0)))]
                        [(list se0 (? ellipsis?) se* ... sen)
                         (cons (ellipsis (recur se0)) (append (map recur se*) (list (recur sen))))]
@@ -347,7 +347,7 @@
                                          [_ f])))
                  (define field-types (map (λ (x) (if (ellipsis? x) 'ellipsis 'normal)) fields))
                  (keyword-production prod keyword struct-name field-count field-names field-types)]
-                ;; otherwise it is an applicatio
+                ;; otherwise it is an application
                 [_ (application-production prod (syntax->list #'prod))])]
              [(something . more) (application-production prod (syntax->list #'prod))]
              [__ 'ok])))
@@ -388,18 +388,104 @@
                      )]
                   [_ (error)]))]
              [_ (error)]))))
+     (define the-parser
+       (with-syntax ([ooo #'(... ...)])
+         (define (nonterminal->parse-name nt) (format-id stx "parse-~a" (nonterminal-name nt)))
+         (define (field-name->nonterminal f)  (meta-vars-ref  f))
+         (define (construct-parse-nonterminal nt)
+           (match nt
+             [(nonterminal stx name meta-vars productions)
+              (define parse-nt (nonterminal->parse-name nt))
+              (define parse-nt* (format-id stx "parse*-~a" name))
+              (define clauses  (map (λ(p) (construct-parse-clause name p)) productions))
+              (with-syntax ([parse-nt parse-nt] [parse-nt* parse-nt*] [(clause ...) clauses])
+                #'(define (parse-nt se)
+                    (define (parse-nt* se*) (map parse-nt se*))
+                    (match se 
+                      clause ...
+                      [else (error 'parse-nt "got: ~a" se)])))]))
+         (define (construct-parse-clause nt-name prod)
+           (match prod
+             [(terminal-production stx term)
+              (match term
+                [(terminal stx name meta-vars prettifier)
+                 (with-syntax ([pred? (format-id stx "~a?" name)])
+                   #'[(? pred? x) x])])]
+             [(nonterminal-production stx nonterminal) 
+              (error 'construct-parse-clause "todo ~a" prod)]
+             [(keyword-production     stx keyword struct-name 
+                                      field-count field-names field-types)
+              (with-syntax ([keyword keyword]
+                            [(field-name ...) field-names]
+                            [constructor  (qualified-struct-name stx lang-name nt-name keyword)]
+                            [(field-expression ...)
+                             (for/list ([f field-names])
+                               (cond [(terminal-meta-var? f) f]
+                                     [(nonterminal-meta-var? f) 
+                                      (with-syntax ([parse-field (nonterminal->parse-name
+                                                                  (field-name->nonterminal f))]
+                                                    [f f])                                        
+                                        #'(parse-field f))]
+                                     ; [(ellipsis se) (error 'todo "todo")]
+                                     [else (error 'todo "got ~a" f)]))])
+                #'[(list 'keyword field-name ...)
+                   (constructor field-expression ...)])]
+             [(application-production stx syntaxes) (error 'todo "got ~a" prod)]
+             [else (error 'construct-parse-clause "got ~a" prod)]))
+
+         (with-syntax ([(parse-nt ...) (map construct-parse-nonterminal nonterminals)]
+                       [parse-lang     (format-id stx "~a-parse" lang-name)]
+                       [parse-entry    (format-id stx "parse-~a" entry-name)])
+           (define it
+           #'(define (parse-lang se)
+               parse-nt ...
+               (parse-entry se)))
+           (displayln it)
+           it)
+       #;(define (parse se)
+           ; 1) define parsers for each nonterminal
+           ; 2) call the entry parser
+           (define (parse-expr se)
+             (define p parse-expr)
+             (define (p* se*) (map p se*))
+             (match se
+               ;[(? uvar? x)        x]
+               ;[(? primitive? pr) pr]
+               ; [(? datum? d)       d]
+               ; terminal-productions generate a pattern using the predicate
+               [(? uvar? x)         x]
+               ; a keyword k becomes 'k and terminal-meta-vars use predicates,
+               ; nonterminal-meta-vars recursivly calls the appropriate parser
+               [(list 'quote (? datum? d))                  (Lsrc:Expr:quote d)]
+               [(list 'if    e0 e1 e2)                      (Lsrc:Expr:if (p e0) (p e1) (p e2))]
+               [(list 'begin e* ooo e)                      (Lsrc:Expr:begin (map p e*) (p e))]
+               [(list 'lambda (list (? uvar? x*) ooo) body) (Lsrc:Expr:lambda x* (p body))]
+               [(list 'let    (list [list x* e*] ooo) body) (Lsrc:Expr:let    x* (p* e*) (p body))]
+               [(list 'letrec (list [list x* e*] ooo) body) (Lsrc:Expr:letrec x* (p* e*) (p body))]
+               [(list 'set!   (? uvar? x) e)                (Lsrc:Expr:set!   x  (p e))]
+               [(list 'call e e* ooo)                       (Lsrc:Expr:call   (p e) (p* e*))]
+               [(list (? primitive? pr) e* ooo)             (cons pr (p* e*))]
+               [_ (error 'parse "got: ~a" se)]))
+           (parse-expr se))))
      
-     (with-syntax ([(struct-def ...) structs])
+     
+     
+     (with-syntax ([(struct-def ...) structs]
+                   [parser-definition the-parser])
        (syntax/loc stx
-         (begin struct-def ...)))
+         (begin struct-def ...
+                parser-definition)))
      
      #;(datum->syntax #'here
-                    (list 'quote
-                          (list (list (list "lang-name"   (syntax-e #'lang-name)))
-                                (list "entry-name"  entry-name)
-                                (list "terminals"   terminals)
-                                (list "non-terms"   nonterminals))))]))
+                      (list 'quote
+                            (list (list (list "lang-name"   (syntax-e #'lang-name)))
+                                  (list "entry-name"  entry-name)
+                                  (list "terminals"   terminals)
+                                  (list "non-terms"   nonterminals))))]))
 
+(define (uvar? x)      (symbol? x))
+(define (primitive? x) (and (symbol? x) (member x '(+ - add1))))
+(define (datum? x)     (or (number? x) (symbol? x) (string? x)))
 (define-language Lsrc
   (entry Expr) 
   (terminals
@@ -408,13 +494,38 @@
    (datum (d)))
   (Expr (e body)
         x
-        ;(quote d)
+        (quote d)
         (if e0 e1 e2)
         (begin e* ... e)
         (lambda (x* ...) body)
         (let ([x* e*] ...) body) 
         (letrec ([x* e*] ...) body) 
         (set! x e)
-        (pr e* ...)
+        ; (pr e* ...)
         (call e e* ...)))
 
+(define (parse- se)
+  ; 1) define parsers for each nonterminal
+  ; 2) call the entry parser
+  (define (parse-expr se)
+    (define p parse-expr)
+    (define (p* se*) (map p se*))
+    (match se
+      ;[(? uvar? x)        x]
+      ;[(? primitive? pr) pr]
+      ; [(? datum? d)       d]
+      ; terminal-productions generate a pattern using the predicate
+      [(? uvar? x)         x]
+      ; a keyword k becomes 'k and terminal-meta-vars use predicates,
+      ; nonterminal-meta-vars recursivly calls the appropriate parser
+      [(list 'quote (? datum? d))                  (Lsrc:Expr:quote d)]
+      [(list 'if    e0 e1 e2)                      (Lsrc:Expr:if (p e0) (p e1) (p e2))]
+      [(list 'begin e* ... e)                      (Lsrc:Expr:begin (map p e*) (p e))]
+      [(list 'lambda (list (? uvar? x*) ...) body) (Lsrc:Expr:lambda x* (p body))]
+      [(list 'let    (list [list x* e*] ...) body) (Lsrc:Expr:let    x* (p* e*) (p body))]
+      [(list 'letrec (list [list x* e*] ...) body) (Lsrc:Expr:letrec x* (p* e*) (p body))]
+      [(list 'set!   (? uvar? x) e)                (Lsrc:Expr:set!   x  (p e))]
+      [(list 'call e e* ...)                       (Lsrc:Expr:call   (p e) (p* e*))]
+      [(list (? primitive? pr) e* ...)             (cons pr (p* e*))]
+      [_ (error 'parse "got: ~a" se)]))
+  (parse-expr se))
