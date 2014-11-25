@@ -2,8 +2,9 @@
 ;;; TODO
 ;;;   done  - parse define-language into structures
 ;;;   done  - produce structure definitions for nonterminals
-;;;         - produce type checking constructors for the nonterminal structures
+;;;   done  - produce type checking constructors for the nonterminal structures
 ;;;         - check References to meta-variables in a production must be unique
+;;;         - fix todo0 in construct-parse-clause
 ;;; TODO
 ;;;         - should ... be disallowed as a keyword?
 
@@ -478,6 +479,7 @@
               (with-syntax ([pred? (terminal->predicate-name #'here term)])
                 #'[(? pred? x) x])]
              [(nonterminal-production stx nonterminal) 
+              ; TODO: one nonterminal has another as production: do what ... ?
               (error 'construct-parse-clause "todo0  ~a" prod)]
              [(keyword-production stx keyword struct-name 
                                   field-count field-names field-depths s-exp)
@@ -615,8 +617,30 @@
         (letrec ([x* e*] ...) body) 
         (set! x e)
         (pr e* ...)
-        (foo ((e*) ...) ...)
+        ; (foo ((e*) ...) ...)  ; <= requires depth 2
         (call e e* ...)))
+
+(define-language Lsrc1
+  (entry Expr) 
+  (terminals
+   (uvar (x))
+   (primitive (pr))
+   (datum (d)))
+  (Expr (e body)
+        x
+        (quote d)
+        (if e0 e1 e2)
+        (begin e* ... e)
+        (lambda (x* ...) body)
+        (let ([x* e*] ...) body) 
+        (letrec ([x* e*] ...) body) 
+        (set! x e)
+        (pr e* ...)
+        ; (foo ((e*) ...) ...)  ; <= requires depth 2
+        (call e e* ...))
+  (Command (c)
+           e
+           (run e)))
 
 (define (parse- se)
   ; 1) define parsers for each nonterminal
