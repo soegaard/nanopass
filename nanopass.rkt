@@ -349,7 +349,7 @@
                  (define field-types (map (λ (x) (if (ellipsis? x) 'ellipsis 'normal)) fields))
                  (keyword-production prod keyword struct-name field-count field-names field-types prod)]
                 ;; otherwise it is an s-expression
-                [_ (s-exp-production prod (syntax->list #'prod))])]
+                [_ (s-exp-production prod)])]
              [(something . more) (s-exp-production prod (syntax->list #'prod))]
              [__ 'ok])))
        ; replace old contents of productions field in the nonterminal with
@@ -394,8 +394,7 @@
          (define (nonterminal->parse-name nt) (format-id stx "parse-~a" (nonterminal-name nt)))
          (define (field-name->nonterminal f)  (meta-vars-ref  f))
          (define (construct-parse-nonterminal nt)
-           (match nt
-             [(nonterminal stx name meta-vars productions)
+           (match-define (nonterminal stx name meta-vars productions) nt)
               (define parse-nt (nonterminal->parse-name nt))
               (define parse-nt* (format-id stx "parse*-~a" name))
               (define clauses  (map (λ(p) (construct-parse-clause name p)) productions))
@@ -404,16 +403,15 @@
                     (define (parse-nt* se*) (map parse-nt se*))
                     (match se 
                       clause ...
-                      [else (error 'parse-nt "got: ~a" se)])))]))
+                      [else (error 'parse-nt "got: ~a" se)]))))
          (define (construct-parse-clause nt-name prod)
            (match prod
              [(terminal-production stx term)
-              (match term
-                [(terminal stx name meta-vars prettifier)
-                 (with-syntax ([pred? (format-id stx "~a?" name)])
-                   #'[(? pred? x) x])])]
+              (match-define (terminal stx name meta-vars prettifier) term)
+              (with-syntax ([pred? (terminal->predicate-name #'here term)])
+                #'[(? pred? x) x])]
              [(nonterminal-production stx nonterminal) 
-              (error 'construct-parse-clause "todo ~a" prod)]
+              (error 'construct-parse-clause "todo0  ~a" prod)]
              [(keyword-production     stx keyword struct-name 
                                       field-count field-names field-types s-exp)
               (with-syntax ([keyword keyword]
@@ -428,11 +426,15 @@
                                                     [f f])                                        
                                         #'(parse-field f))]
                                      ; [(ellipsis se) (error 'todo "todo")]
-                                     [else (error 'todo "got ~a" f)]))])
+                                     [else (error 'todo1 "got ~a" f)]))])
                 #'[(list 'keyword field-name ...)
                    (constructor field-expression ...)])]
-             [(s-exp-production stx) (error 'todo "got ~a" prod)]
+             [(s-exp-production stx)
+              #'['42 '42]
+              #;(error 'todo2 "got ~a" prod)]
              [else (error 'construct-parse-clause "got ~a" prod)]))
+         (define (terminal->predicate-name loc t)
+           (format-id loc "~a?" (terminal-name t)))
          (define (production-s-exp->match-pattern se)
            ;   production-s-expr = meta-variable
            ;                     | (maybe meta-variable)
@@ -442,8 +444,7 @@
            ;                     | ()
            ;  where meta-variable is either a terminal-meta-var or a nonterminal-meta-var possibly
            ;  followed by a sequence of ?, * or digits.
-           (define (terminal->predicate-name loc t)
-             (format-id loc "~a?" (terminal-name t)))
+           
            (define (recur se) ; recur returns a list of pattens (due to pat ... patterns)
              (with-syntax ([ooo #'(... ...)])
              (match (if (syntax-pair? se) (syntax-e se) se)
@@ -510,6 +511,9 @@
            (parse-expr se))))
      
      
+     (displayln "--- nonterminals ---")
+     (displayln nonterminals)
+     (newline)
      
      (with-syntax ([(struct-def ...) structs]
                    [parser-definition the-parser])
@@ -542,7 +546,7 @@
         (let ([x* e*] ...) body) 
         (letrec ([x* e*] ...) body) 
         (set! x e)
-        ; (pr e* ...)
+        (pr e* ...)
         (call e e* ...)))
 
 (define (parse- se)
