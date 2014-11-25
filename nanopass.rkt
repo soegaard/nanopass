@@ -1,4 +1,6 @@
 #lang racket
+;;; fixing (Lsrc-parse '(foo ((2)))
+
 ;;; TODO
 ;;;   done  - parse define-language into structures
 ;;;   done  - produce structure definitions for nonterminals
@@ -13,10 +15,6 @@
 ;;; This implementation follows the specification in 
 ;;; "A Nanopasss Framework for Commercial Compiler Development"
 ;;; by Andy Keep.
-
-;;;
-;;; Example 1
-;;;
 
 ; syntax
 ;     (DEFINE-LANGUAGE lang-name clause ...)
@@ -43,7 +41,7 @@
 ;                     | (keyword . production-s-expr)
 
 ;   production-s-expr = meta-variable
-;                     | (maybe meta-variable)
+;                     | (MAYBE meta-variable)
 ;                     | (production-s-expr ellipsis)
 ;                     | (production-s-expr ellipsis production-s-expr ... . prod-s-expr)
 ;                     | (production-s-expr . production-s-expr)
@@ -407,8 +405,8 @@
          (define (nonterminal->parse-name nt depth)
            (case depth
              [(0)  (format-id stx "parse-~a" (nonterminal-name nt))]
-             [(1)  (format-id stx "parse*-~a" (nonterminal-name nt))]
-             [else 
+             [else  (format-id stx "parse*-~a" (nonterminal-name nt))]  ; XXXX
+             #;[else 
               ; if you get this error implement depths larger than 1 ...
               (error 'nonterminal->parse-name "got: ~a" depth)]))
          (define (field-name->nonterminal f)  (meta-vars-ref  f))
@@ -420,7 +418,10 @@
            (define clauses  (map (λ(p) (construct-parse-clause name p)) productions))
            (with-syntax ([parse-nt parse-nt] [parse-nt* parse-nt*] [(clause ...) clauses])
              #'(define (parse-nt se)
-                 (define (parse-nt* se*) (map parse-nt se*))
+                 (define (parse-nt* se* d) 
+                   (if (= d 1)
+                       (map parse-nt se*)
+                       (map (λ(se) (parse-nt* se (- d 1))) se*)))
                  (match se 
                    clause ...
                    [else (displayln se)
@@ -441,14 +442,14 @@
                        [(nonterminal stx name meta-vars productions)
                         (with-syntax ([parse-nt  (nonterminal->parse-name mv 0)]
                                       [parse*-nt (nonterminal->parse-name mv 1)])
-                        ; whatever the nonterminal matched needs to be parsed.
-                        ; The depths determines how.
-                        ; TODO TODO where is depth of a nonterminal meta var stored?
-                        ;           ... the wrong place?
-                        (case d
-                          [(0) #'(parse-nt x)]
-                          [(1) #'(parse*-nt x)]
-                          [else (error 'todo "depths larger than 1 not implemented yet")]))]
+                          ; whatever the nonterminal matched needs to be parsed.
+                          ; The depths determine how.
+                          (case d
+                            [(0) #'(parse-nt x)]
+                            [(1) #'(parse*-nt x 1)]
+                            [else (with-syntax ([d d])
+                                    #'(parse*-nt x d))]
+                            ))]
                        [_ ; unrecognized meta variable
                         (displayln se)
                         (error 'production-s-exp->match-pattern "internal error: ~a" se)])))]
@@ -456,20 +457,16 @@
                  [(ellipsis se0)
                   (list (recur se0 (+ d 1)))]
                  [(list-rest (ellipsis se0) se* ... sen)
-                  (displayln (list se se0 se* sen))
-                  (displayln (append (recur se0 (+ d 1))
-                                     (append-map (λ(se) (recur se d)) se*)
-                                     (recur sen d)))
-                  #;(recur se0 (+ d 1))
+                  #;(displayln (list se se0 se* sen))
+                  #;(displayln (append (recur se0 (+ d 1))
+                                       (append-map (λ(se) (recur se d)) se*)
+                                       (recur sen d)))
                   (append (recur se0 (+ d 1))
                           (append-map (λ(se) (recur se d)) se*)
                           (recur sen d))]
                  [(cons se0 se1) 
                   (list #`(cons #,@(recur se0 d) #,@(recur se1 d)))]
-                 ['() 
-                  '()
-                  ; (list #''())
-                  ]
+                 ['() '()]
                  [_ (error 'production-s-exp->match-pattern "gotx: ~a" se)])))
            (recur se 0))
          (define (construct-parse-clause nt-name prod)
@@ -492,29 +489,27 @@
                                      [(nonterminal-meta-var? f)
                                       (with-syntax ([parse-field (nonterminal->parse-name
                                                                   (field-name->nonterminal f) fd)]
-                                                    [f f])                                        
-                                        #'(parse-field f))]
+                                                    [f f])
+                                        (if (= fd 0)
+                                            #'(parse-field f)
+                                            #`(parse-field f #,fd)))]
                                      [else (error 'todo1 "got ~a" f)]))])
                 #`[(cons 'keyword #,@(production-s-exp->match-pattern s-exp))
                    (constructor field-expression ...)])]
              [(s-exp-production stx)
               #`[#,@(production-s-exp->match-pattern stx) 
-                 #,@(production-s-exp->match-template stx)]
-              ; #`[42 '#,stx]
-              ]
+                 #,@(production-s-exp->match-template stx)]]
              [else (error 'construct-parse-clause "got ~a" prod)]))
          (define (terminal->predicate-name loc t)
            (format-id loc "~a?" (terminal-name t)))
-           ;   production-s-expr = meta-variable
-           ;                     | (maybe meta-variable)
-           ;                     | (production-s-expr ellipsis)
-           ;                     | (production-s-expr ellipsis production-s-expr ... . prod-s-expr)
-           ;                     | (production-s-expr . production-s-expr)
-           ;                     | ()
-           ;  where meta-variable is either a terminal-meta-var or a nonterminal-meta-var possibly
-           ;  followed by a sequence of ?, * or digits.
-         
-             
+         ;   production-s-expr = meta-variable
+         ;                     | (maybe meta-variable)
+         ;                     | (production-s-expr ellipsis)
+         ;                     | (production-s-expr ellipsis production-s-expr ... . prod-s-expr)
+         ;                     | (production-s-expr . production-s-expr)
+         ;                     | ()
+         ;  where meta-variable is either a terminal-meta-var or a nonterminal-meta-var possibly
+         ;  followed by a sequence of ?, * or digits.
          (define (production-s-exp->match-pattern se)
            (define (recur se) ; recur returns a list of pattens (due to pat ... patterns)
              (with-syntax ([ooo #'(... ...)])
@@ -636,10 +631,10 @@
         (letrec ([x* e*] ...) body) 
         (set! x e)
         (pr e* ...)
-        ; (foo ((e*) ...) ...)  ; <= requires depth 2
+        (foo ((e*) ...) ...)  ; <= requires depth 2
         (call e e* ...))
   (Command (c)
-           e
+           ; e  ; <= apropos todo0
            (run e)))
 
 (define (parse- se)
