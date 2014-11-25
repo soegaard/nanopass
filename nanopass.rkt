@@ -3,7 +3,7 @@
 ;;;   done  - parse define-language into structures
 ;;;   done  - produce structure definitions for nonterminals
 ;;;         - produce type checking constructors for the nonterminal structures
-
+;;;         - check References to meta-variables in a production must be unique
 ;;; TODO
 ;;;         - should ... be disallowed as a keyword?
 
@@ -98,9 +98,8 @@
   (struct    terminal-production production (terminal)    #:prefab)
   (struct nonterminal-production production (nonterminal) #:prefab)
   (struct     keyword-production production 
-    (keyword struct-name field-count field-names field-types) #:prefab)
-  (struct application-production production (syntaxes))
-  ; todo: add "application" production
+    (keyword struct-name field-count field-names field-types s-exp) #:prefab)
+  (struct s-exp-production production ())
   ; a keyword production will generate a structure definition with
   ; where field-count is the number of fields,
   ;       field-names is a list of names (identifiers) of the fields
@@ -168,6 +167,14 @@
 
 ;; Various helpers
 (begin-for-syntax
+  
+  (define (syntax-pair? stx) 
+    ; if stx is a syntax pair, return a pair of syntaxes,
+    ; otherwise return #f
+    (and (syntax? stx) 
+         (let ([x (syntax-e stx)])
+           (and (pair? x) x))))
+  
   (define (qualified-name ctx prefix suffix [src ctx])
     (format-id ctx "~a:~a" prefix suffix #:source src))
   
@@ -287,19 +294,13 @@
               (match (keywords-ref #'x)
                 [(list orig-nt ps)
                  ;; x is a keyword ...
-                 
-                 
-                 
                  ;; In order to make later processing easier we 
                  ;; rewrite the s-exp such that  s-exp ...  becomes (ellipsis s-exp)
                  (define (maybe?    stx) (and (identifier? stx) (eq? (syntax-e stx) 'maybe)))
                  ; todo: should (ellipsis (maybe mv)) also count as a maybe?
                  (define (make-ellipsis-prefix se)
                    (define (ellipsis? stx) (eq? (syntax-e stx) '...))
-                   (define (syntax-pair? stx) 
-                     (and (syntax? stx) 
-                          (let ([x (syntax-e stx)])
-                            (and (pair? x) x))))
+                   
                    (define (recur se)
                      (match (or (syntax-pair? se) se)
                        [(? identifier? v)   (if (meta-var? v) v (error 'here "foo"))]
@@ -346,16 +347,16 @@
                                          [(ellipsis name) name]
                                          [_ f])))
                  (define field-types (map (λ (x) (if (ellipsis? x) 'ellipsis 'normal)) fields))
-                 (keyword-production prod keyword struct-name field-count field-names field-types)]
-                ;; otherwise it is an application
-                [_ (application-production prod (syntax->list #'prod))])]
-             [(something . more) (application-production prod (syntax->list #'prod))]
+                 (keyword-production prod keyword struct-name field-count field-names field-types prod)]
+                ;; otherwise it is an s-expression
+                [_ (s-exp-production prod (syntax->list #'prod))])]
+             [(something . more) (s-exp-production prod (syntax->list #'prod))]
              [__ 'ok])))
        ; replace old contents of productions field in the nonterminal with
        ; the structure representation of productions
        (set-nonterminal-productions! nt prods)
-       (displayln (list 'define-language 'productions: ))
-       (displayln prods)
+       ; (displayln (list 'define-language 'productions: ))
+       ; (displayln prods)
        )
      
      (define all-terminal-meta-vars    (append-map terminal-meta-vars terminals))
@@ -379,7 +380,7 @@
               (for/list ([prod productions]
                          #:when (keyword-production? prod))
                 (match prod
-                  [(keyword-production stx keyword struct-name field-count field-names field-types)
+                  [(keyword-production stx keyword struct-name field-count field-names field-types s-exp)
                    (with-syntax ([struct-name struct-name]
                                  [(field-name ...) field-names])
                      ; This is the basic structure definition:
@@ -414,7 +415,7 @@
              [(nonterminal-production stx nonterminal) 
               (error 'construct-parse-clause "todo ~a" prod)]
              [(keyword-production     stx keyword struct-name 
-                                      field-count field-names field-types)
+                                      field-count field-names field-types s-exp)
               (with-syntax ([keyword keyword]
                             [(field-name ...) field-names]
                             [constructor  (qualified-struct-name stx lang-name nt-name keyword)]
@@ -430,8 +431,44 @@
                                      [else (error 'todo "got ~a" f)]))])
                 #'[(list 'keyword field-name ...)
                    (constructor field-expression ...)])]
-             [(application-production stx syntaxes) (error 'todo "got ~a" prod)]
+             [(s-exp-production stx) (error 'todo "got ~a" prod)]
              [else (error 'construct-parse-clause "got ~a" prod)]))
+         (define (production-s-exp->match-pattern se)
+           ;   production-s-expr = meta-variable
+           ;                     | (maybe meta-variable)
+           ;                     | (production-s-expr ellipsis)
+           ;                     | (production-s-expr ellipsis production-s-expr ... . prod-s-expr)
+           ;                     | (production-s-expr . production-s-expr)
+           ;                     | ()
+           ;  where meta-variable is either a terminal-meta-var or a nonterminal-meta-var possibly
+           ;  followed by a sequence of ?, * or digits.
+           (define (terminal->predicate-name loc t)
+             (format-id loc "~a?" (terminal-name t)))
+           (define (recur se) ; recur returns a list of pattens (due to pat ... patterns)
+             (with-syntax ([ooo #'(... ...)])
+             (match (if (syntax-pair? se) (syntax-e se) se)
+               [x:id  (define mv (meta-vars-ref #'x))
+                      (list 
+                       (match mv
+                         [(terminal stx name meta-vars prettifier)
+                          (with-syntax ([pred? (terminal->predicate-name #'x mv)])
+                            #'(? pred? x))]
+                         [(nonterminal stx name meta-vars productions)
+                          #'x]
+                         [_ (error 'production-s-exp->match-pattern "got: ~a" se)]))]
+               ; [(maybe mv) (error 'production-s-exp->match-pattern "todo: ~a" se)]
+               [(ellipsis se0)
+                (list (recur se0) #'ooo)]  
+               [(list* (ellipsis se0) se* ... sen)
+                (list #`(list-rest #,@(recur se*) ooo #,@(append-map recur se*) #,@(recur sen)))]
+               [(cons se0 se1) 
+                (list #`(cons #,@(recur se0) #,@(recur se1)))]
+               ['() 
+                (list #''())]
+               [_ (error 'production-s-exp->match-pattern "got: ~a" se)])))
+           (recur se))
+         
+         
 
          (with-syntax ([(parse-nt ...) (map construct-parse-nonterminal nonterminals)]
                        [parse-lang     (format-id stx "~a-parse" lang-name)]
@@ -442,6 +479,10 @@
                (parse-entry se)))
            (displayln it)
            it)
+         
+         ;;; Example: Handwritten parser.
+         
+         ;;; TODO: Implement production-s-expression->parser-match-pattern
        #;(define (parse se)
            ; 1) define parsers for each nonterminal
            ; 2) call the entry parser
