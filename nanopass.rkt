@@ -1,10 +1,9 @@
 #lang racket
-;;; fixing (Lsrc-parse '(foo ((2)))
-
 ;;; TODO
 ;;;   done  - parse define-language into structures
 ;;;   done  - produce structure definitions for nonterminals
 ;;;   done  - produce type checking constructors for the nonterminal structures
+;;;   done  - accept nested use of ... 
 ;;;         - check References to meta-variables in a production must be unique
 ;;;         - fix todo0 in construct-parse-clause
 ;;; TODO
@@ -424,7 +423,9 @@
                        (map (λ(se) (parse-nt* se (- d 1))) se*)))
                  (match se 
                    clause ...
-                   [else (displayln se)
+                   [else (displayln 'parse-nt)
+                         (displayln '(clause ...))
+                         (displayln se)
                          (error 'parse-nt "got: ~a" se)]))))
          (define (production-s-exp->match-template se)
            (define (recur se d) ; d=depth
@@ -612,7 +613,7 @@
         (letrec ([x* e*] ...) body) 
         (set! x e)
         (pr e* ...)
-        ; (foo ((e*) ...) ...)  ; <= requires depth 2
+        (foo ((e*) ...) ...)  ; <= requires depth 2
         (call e e* ...)))
 
 (define-language Lsrc1
