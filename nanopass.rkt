@@ -5,10 +5,21 @@
 ;;;   done  - produce type checking constructors for the nonterminal structures
 ;;;   done  - accept nested use of ... 
 ;;;         - check References to meta-variables in a production must be unique
-;;;         - fix todo0 in construct-parse-clause
+;;;  [done] - fix todo0 in construct-parse-clause
+;;;           tempory fix in place see comment in construct-parse-clause
+;;;         - unparsing
 ;;; TODO
 ;;;         - should ... be disallowed as a keyword?
 
+;;; IDEAS (from akeep/nanopass)
+;;;         * Added a prune-language form that, when given a language, starts traversing
+;;;           the language from the entry nontermainal and determines if there are any
+;;;           dead nonterminals or terminals in the language, prunes them, and returns an
+;;;           S-expression representing only the reachable parts of the language.
+;;;         * added checking for mutually recursive nonterminals so that we now report
+;;;           an error to the user.  this was a simple change, and if we want to support
+;;;           this in the future, there is probably a way to do so, we just need to be
+;;;           careful about pass generation.
 ;;;
 ;;; The nanopass framework is a framework for writing compilers.
 ;;; This implementation follows the specification in 
@@ -201,8 +212,6 @@
       [(symbol? s) (strip-symbol s)]
       [(string? s) (strip-string s)]
       [else (error 'strip-meta-var-suffix "expected identifer, symbol, or, string, got:~a" s)])))
-
-
 
 ;;; define-language
 (define-syntax (define-language stx)
@@ -406,27 +415,28 @@
              [(0)  (format-id stx "parse-~a" (nonterminal-name nt))]
              [else  (format-id stx "parse*-~a" (nonterminal-name nt))]  ; XXXX
              #;[else 
-              ; if you get this error implement depths larger than 1 ...
-              (error 'nonterminal->parse-name "got: ~a" depth)]))
+                ; if you get this error implement depths larger than 1 ...
+                (error 'nonterminal->parse-name "got: ~a" depth)]))
          (define (field-name->nonterminal f)  (meta-vars-ref  f))
          (define (construct-parse-nonterminal nt)
            ; return a parser of s-exp representing the nonterminal nt
            (match-define (nonterminal stx name meta-vars productions) nt)
            (define parse-nt  (nonterminal->parse-name nt 0))
            (define parse-nt* (nonterminal->parse-name nt 1))
-           (define clauses  (map (λ(p) (construct-parse-clause name p)) productions))
+           (define clauses (append-map (λ(p) (construct-parse-clause name p)) productions))
            (with-syntax ([parse-nt parse-nt] [parse-nt* parse-nt*] [(clause ...) clauses])
-             #'(define (parse-nt se)
+             #'(begin
                  (define (parse-nt* se* d) 
                    (if (= d 1)
                        (map parse-nt se*)
                        (map (λ(se) (parse-nt* se (- d 1))) se*)))
-                 (match se 
-                   clause ...
-                   [else (displayln 'parse-nt)
-                         (displayln '(clause ...))
-                         (displayln se)
-                         (error 'parse-nt "got: ~a" se)]))))
+                 (define (parse-nt se)
+                   (match se 
+                     clause ...
+                     [else (displayln 'parse-nt)
+                           (displayln '(clause ...))
+                           (displayln se)
+                           (error 'parse-nt "got: ~a" se)])))))
          (define (production-s-exp->match-template se)
            (define (recur se d) ; d=depth
              (with-syntax ([ooo #'(... ...)])
@@ -475,10 +485,23 @@
              [(terminal-production stx term)
               (match-define (terminal stx name meta-vars prettifier) term)
               (with-syntax ([pred? (terminal->predicate-name #'here term)])
-                #'[(? pred? x) x])]
-             [(nonterminal-production stx nonterminal) 
+                (list #'[(? pred? x) x]))]
+             [(nonterminal-production stx nonterm) 
               ; TODO: one nonterminal has another as production: do what ... ?
-              (error 'construct-parse-clause "todo0  ~a" prod)]
+              ; 1. produce parse-clauses for the nonterminal and include here?
+              ; 2. add new mode to parse-clause that doesn't error but return #f,
+              ;    when an se doesn't parse [ and then use parse-nt in a (? parse-nt result)
+              ;    pattern
+              (match-define (nonterminal stx name meta-vars productions) nonterm)
+              (append-map (λ(p) (construct-parse-clause name p)) productions)
+              ; TODO: Note the above append-map works.
+              ;       However ... the clauses will be instantiated several times,
+              ;       which imply a risk of blowing up the generated code size.
+              ;       It would be better to rewrite parse-nt : give it a failure
+              ;       continuation (thunk) that be (lambda () #f) which makes
+              ;       it usable as a mach pattern predicate - or it can be
+              ;       (lambda () (raise-exception)).
+              ]
              [(keyword-production stx keyword struct-name 
                                   field-count field-names field-depths s-exp)
               (with-syntax ([keyword keyword]
@@ -495,12 +518,12 @@
                                             #'(parse-field f)
                                             #`(parse-field f #,fd)))]
                                      [else (error 'todo1 "got ~a" f)]))])
-                #`[(cons 'keyword #,@(production-s-exp->match-pattern s-exp))
-                   (constructor field-expression ...)])]
+                (list #`[(cons 'keyword #,@(production-s-exp->match-pattern s-exp))
+                         (constructor field-expression ...)]))]
              [(s-exp-production stx)
-              #`[#,@(production-s-exp->match-pattern stx) 
-                 #,@(production-s-exp->match-template stx)]]
-             [else (error 'construct-parse-clause "got ~a" prod)]))
+              (list #`[#,@(production-s-exp->match-pattern stx) 
+                       #,@(production-s-exp->match-template stx)])]
+             [else (error 'construct-parse-clause "todo got ~a" prod)]))
          (define (terminal->predicate-name loc t)
            (format-id loc "~a?" (terminal-name t)))
          ;   production-s-expr = meta-variable
@@ -617,7 +640,7 @@
         (call e e* ...)))
 
 (define-language Lsrc1
-  (entry Expr) 
+  (entry Command) 
   (terminals
    (uvar (x))
    (primitive (pr))
@@ -632,10 +655,10 @@
         (letrec ([x* e*] ...) body) 
         (set! x e)
         (pr e* ...)
-        (foo ((e*) ...) ...)  ; <= requires depth 2
+        (foo ((e*) ...) ...)
         (call e e* ...))
   (Command (c)
-           ; e  ; <= apropos todo0
+           e  ; <= apropos todo0
            (run e)))
 
 (define (parse- se)
