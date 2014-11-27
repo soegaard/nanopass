@@ -409,34 +409,42 @@
                   [_ (error)]))]
              [_ (error)]))))
      (define the-parser
-       (with-syntax ([ooo #'(... ...)])
-         (define (nonterminal->parse-name nt depth)
+       (with-syntax ([ooo #'(... ...)] [failure #'failure])
+         (define (nonterminal->parse-name nt depth [suffix ""])
+           ; suffix can be used to append a trailing "?"
            (case depth
-             [(0)  (format-id stx "parse-~a" (nonterminal-name nt))]
-             [else  (format-id stx "parse*-~a" (nonterminal-name nt))]  ; XXXX
-             #;[else 
-                ; if you get this error implement depths larger than 1 ...
-                (error 'nonterminal->parse-name "got: ~a" depth)]))
+             [(0)   (format-id stx "parse-~a~a"  (nonterminal-name nt) suffix)]
+             [else  (format-id stx "parse*-~a~a" (nonterminal-name nt) suffix)]))
          (define (field-name->nonterminal f)  (meta-vars-ref  f))
          (define (construct-parse-nonterminal nt)
            ; return a parser of s-exp representing the nonterminal nt
            (match-define (nonterminal stx name meta-vars productions) nt)
-           (define parse-nt  (nonterminal->parse-name nt 0))
-           (define parse-nt* (nonterminal->parse-name nt 1))
+           (define parse-nt   (nonterminal->parse-name nt 0))
+           (define parse-nt*  (nonterminal->parse-name nt 1))
+           (define parse-nt?  (nonterminal->parse-name nt 0 '?))
+           (define parse-nt*? (nonterminal->parse-name nt 1 '?))           
            (define clauses (append-map (λ(p) (construct-parse-clause name p)) productions))
-           (with-syntax ([parse-nt parse-nt] [parse-nt* parse-nt*] [(clause ...) clauses])
+           (with-syntax 
+               ([parse-nt parse-nt] [parse-nt* parse-nt*][parse-nt? parse-nt?] [parse-nt*? parse-nt*?]
+                                    [(clause ...) clauses])
              #'(begin
-                 (define (parse-nt* se* d) 
-                   (if (= d 1)
-                       (map parse-nt se*)
-                       (map (λ(se) (parse-nt* se (- d 1))) se*)))
-                 (define (parse-nt se)
+                 ; parse-nt : s-exp [thunk] -> (or <lang:nt:keyword structure> (failure))
+                 ;   parse the s-exp and return a struct instance,
+                 ;   if parsing fails invoke the failure thunk
+                 (define (parse-nt se [failure (λ () (error 'parse-nt "got: ~a" se))])
                    (match se 
                      clause ...
-                     [else (displayln 'parse-nt)
-                           (displayln '(clause ...))
-                           (displayln se)
-                           (error 'parse-nt "got: ~a" se)])))))
+                     [else (failure)]))
+                 ; parse-nt : lists-of-depth-d depth [thunk] -> ...
+                 ;   parse the s-exps at depth d as the nonterminal nt, 
+                 ;   invoke failure if an s-exp doesn't match nt
+                 (define (parse-nt* se* d [failure (λ () (error 'parse-nt* "got: ~a" se*))])
+                   (if (= d 1)
+                       (map (λ(se) (parse-nt  se         failure)) se*)
+                       (map (λ(se) (parse-nt* se (- d 1) failure)) se*)))
+                 ; predicate version of the parsers (usable as match predicates): 
+                 (define (parse-nt?  se)   (let/ec return (parse-nt  se   (λ() (return #f)))))
+                 (define (parse-nt*? se d) (let/ec return (parse-nt* se d (λ() (return #f))))))))
          (define (production-s-exp->match-template se)
            (define (recur se d) ; d=depth
              (with-syntax ([ooo #'(... ...)])
@@ -455,12 +463,10 @@
                                       [parse*-nt (nonterminal->parse-name mv 1)])
                           ; whatever the nonterminal matched needs to be parsed.
                           ; The depths determine how.
-                          (case d
-                            [(0) #'(parse-nt x)]
-                            [(1) #'(parse*-nt x 1)]
-                            [else (with-syntax ([d d])
-                                    #'(parse*-nt x d))]
-                            ))]
+                          (match d
+                            [0 #'(parse-nt  x failure)]
+                            [_ (with-syntax ([d d])
+                                 #'(parse*-nt x d failure))]))]
                        [_ ; unrecognized meta variable
                         (displayln se)
                         (error 'production-s-exp->match-pattern "internal error: ~a" se)])))]
@@ -486,22 +492,10 @@
               (match-define (terminal stx name meta-vars prettifier) term)
               (with-syntax ([pred? (terminal->predicate-name #'here term)])
                 (list #'[(? pred? x) x]))]
-             [(nonterminal-production stx nonterm) 
-              ; TODO: one nonterminal has another as production: do what ... ?
-              ; 1. produce parse-clauses for the nonterminal and include here?
-              ; 2. add new mode to parse-clause that doesn't error but return #f,
-              ;    when an se doesn't parse [ and then use parse-nt in a (? parse-nt result)
-              ;    pattern
-              (match-define (nonterminal stx name meta-vars productions) nonterm)
-              (append-map (λ(p) (construct-parse-clause name p)) productions)
-              ; TODO: Note the above append-map works.
-              ;       However ... the clauses will be instantiated several times,
-              ;       which imply a risk of blowing up the generated code size.
-              ;       It would be better to rewrite parse-nt : give it a failure
-              ;       continuation (thunk) that be (lambda () #f) which makes
-              ;       it usable as a mach pattern predicate - or it can be
-              ;       (lambda () (raise-exception)).
-              ]
+             [(nonterminal-production stx nonterm)
+              ; The nonterminal nt has another nonterminal as production.
+              (with-syntax ([parse-nonterm? (nonterminal->parse-name nonterm 0 '?)])
+                (list #'[(app parse-nonterm? x) x]))]
              [(keyword-production stx keyword struct-name 
                                   field-count field-names field-depths s-exp)
               (with-syntax ([keyword keyword]
@@ -515,8 +509,8 @@
                                                                   (field-name->nonterminal f) fd)]
                                                     [f f])
                                         (if (= fd 0)
-                                            #'(parse-field f)
-                                            #`(parse-field f #,fd)))]
+                                            #'(parse-field f failure)
+                                            #`(parse-field f #,fd failure)))]
                                      [else (error 'todo1 "got ~a" f)]))])
                 (list #`[(cons 'keyword #,@(production-s-exp->match-pattern s-exp))
                          (constructor field-expression ...)]))]
@@ -565,12 +559,15 @@
                  [_ (error 'production-s-exp->match-pattern "gotx: ~a" se)])))
            (recur se))
          
-         (with-syntax ([(parse-nt ...) (map construct-parse-nonterminal nonterminals)]
+         (with-syntax ([(parse-nt ...)  (map construct-parse-nonterminal  nonterminals)]
                        [parse-lang     (format-id stx "~a-parse" lang-name)]
                        [parse-entry    (format-id stx "parse-~a" entry-name)])
            (define it
              #'(define (parse-lang se)
+                 ; one parser for each nonterminal (that throws exceptions on parse errors)
                  parse-nt ...
+                 
+                 ; start parsing at the nonterminal named entry
                  (parse-entry se)))
            (displayln it)
            it)
@@ -603,6 +600,18 @@
                  [(list (? primitive? pr) e* ooo)             (cons pr (p* e*))]
                  [_ (error 'parse "got: ~a" se)]))
              (parse-expr se))))
+     
+     #;(define the-unparser
+       (let ()
+         (with-syntax ([(unparse-nt ...) (map construct-unparse-nonterminal nonterminals)]
+                       [unparse-lang     (format-id stx "~a-unparse" lang-name)]
+                       [unparse-entry    (format-id stx "unparse-~a" entry-name)])
+           (define (construct-unparse-match-clause nt prod)
+             ...)           
+           #'(define (unparse-lang se)
+               unparse-nt ...
+               (unparse-entry se)))))
+         
      
      (with-syntax ([(struct-def ...) structs]
                    [parser-definition the-parser])
@@ -647,6 +656,7 @@
    (datum (d)))
   (Expr (e body)
         x
+        d
         (quote d)
         (if e0 e1 e2)
         (begin e* ... e)
@@ -660,29 +670,3 @@
   (Command (c)
            e  ; <= apropos todo0
            (run e)))
-
-(define (parse- se)
-  ; 1) define parsers for each nonterminal
-  ; 2) call the entry parser
-  (define (parse-expr se)
-    (define p parse-expr)
-    (define (p* se*) (map p se*))
-    (match se
-      ;[(? uvar? x)        x]
-      ;[(? primitive? pr) pr]
-      ; [(? datum? d)       d]
-      ; terminal-productions generate a pattern using the predicate
-      [(? uvar? x)         x]
-      ; a keyword k becomes 'k and terminal-meta-vars use predicates,
-      ; nonterminal-meta-vars recursivly calls the appropriate parser
-      [(list 'quote (? datum? d))                  (Lsrc:Expr:quote d)]
-      [(list 'if    e0 e1 e2)                      (Lsrc:Expr:if (p e0) (p e1) (p e2))]
-      [(list 'begin e* ... e)                      (Lsrc:Expr:begin (map p e*) (p e))]
-      [(list 'lambda (list (? uvar? x*) ...) body) (Lsrc:Expr:lambda x* (p body))]
-      [(list 'let    (list [list x* e*] ...) body) (Lsrc:Expr:let    x* (p* e*) (p body))]
-      [(list 'letrec (list [list x* e*] ...) body) (Lsrc:Expr:letrec x* (p* e*) (p body))]
-      [(list 'set!   (? uvar? x) e)                (Lsrc:Expr:set!   x  (p e))]
-      [(list 'call e e* ...)                       (Lsrc:Expr:call   (p e) (p* e*))]
-      [(list (? primitive? pr) e* ...)             (cons pr (p* e*))]
-      [_ (error 'parse "got: ~a" se)]))
-  (parse-expr se))
