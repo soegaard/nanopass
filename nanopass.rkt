@@ -3,11 +3,11 @@
 ;;;   done  - parse define-language into structures
 ;;;   done  - produce structure definitions for nonterminals
 ;;;   done  - produce type checking constructors for the nonterminal structures
-;;;   done  - accept nested use of ... 
+;;;   done  - accept nonterminals as productions in nonterminals
 ;;;         - check References to meta-variables in a production must be unique
-;;;  [done] - fix todo0 in construct-parse-clause
-;;;           tempory fix in place see comment in construct-parse-clause
+;;;         - handle keywords that appear in multiple clauses such as (if e0 e1) and (if e0 e1 e2)
 ;;;         - unparsing
+;;;         - construction
 ;;; TODO
 ;;;         - should ... be disallowed as a keyword?
 
@@ -230,7 +230,7 @@
      (define entry-name
        ; If no entry name is defined, then the entry is the first nonterminal
        (match entry-names
-         [(list)      (first nonterminals)]
+         [(list)      (nonterminal-name (first nonterminals))]
          [(list name) name]
          [__ (raise-syntax-error 'define-language "only one entry is allowed" stx)]))
      
@@ -602,16 +602,16 @@
              (parse-expr se))))
      
      #;(define the-unparser
-       (let ()
-         (with-syntax ([(unparse-nt ...) (map construct-unparse-nonterminal nonterminals)]
-                       [unparse-lang     (format-id stx "~a-unparse" lang-name)]
-                       [unparse-entry    (format-id stx "unparse-~a" entry-name)])
-           (define (construct-unparse-match-clause nt prod)
-             ...)           
-           #'(define (unparse-lang se)
-               unparse-nt ...
-               (unparse-entry se)))))
-         
+         (let ()
+           (with-syntax ([(unparse-nt ...) (map construct-unparse-nonterminal nonterminals)]
+                         [unparse-lang     (format-id stx "~a-unparse" lang-name)]
+                         [unparse-entry    (format-id stx "unparse-~a" entry-name)])
+             (define (construct-unparse-match-clause nt prod)
+               ...)           
+             #'(define (unparse-lang se)
+                 unparse-nt ...
+                 (unparse-entry se)))))
+     
      
      (with-syntax ([(struct-def ...) structs]
                    [parser-definition the-parser])
@@ -629,6 +629,7 @@
 (define (uvar? x)      (symbol? x))
 (define (primitive? x) (and (symbol? x) (member x '(+ - add1))))
 (define (datum? x)     (or (number? x) (symbol? x) (string? x)))
+
 (define-language Lsrc
   (entry Expr) 
   (terminals
@@ -641,32 +642,26 @@
         (if e0 e1 e2)
         (begin e* ... e)
         (lambda (x* ...) body)
-        (let ([x* e*] ...) body) 
-        (letrec ([x* e*] ...) body) 
+        (let    ([x* e*] ...) body)
+        (letrec ([x* e*] ...) body)
         (set! x e)
         (pr e* ...)
-        (foo ((e*) ...) ...)  ; <= requires depth 2
         (call e e* ...)))
 
-(define-language Lsrc1
-  (entry Command) 
+(define-language LP
   (terminals
    (uvar (x))
-   (primitive (pr))
-   (datum (d)))
+   (datum (d))
+   (primitive (pr)))
   (Expr (e body)
-        x
         d
-        (quote d)
-        (if e0 e1 e2)
-        (begin e* ... e)
-        (lambda (x* ...) body)
-        (let ([x* e*] ...) body) 
-        (letrec ([x* e*] ...) body) 
+        x
+        pr
         (set! x e)
-        (pr e* ...)
-        (foo ((e*) ...) ...)
-        (call e e* ...))
-  (Command (c)
-           e  ; <= apropos todo0
-           (run e)))
+        ; (if e1 e2)
+        (if e1 e2 e3)
+        (begin e1 ... e2)
+        (lambda (x ...) body1 ... body2)
+        (let ((x e) ...) body1 ... body2)
+        (letrec ((x e) ...) body1 ... body2)
+        (e0 e1 ...)))
