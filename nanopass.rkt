@@ -1,7 +1,7 @@
 #lang racket
 ;;; TODO
 ;;;   done  - parse define-language into structures
-;;;   done  - produce structure definitions for nonterminals
+;;;   done  - produce pure definitions for nonterminals
 ;;;   done  - produce type checking constructors for the nonterminal structures
 ;;;   done  - accept nonterminals as productions in nonterminals
 ;;;         - check References to meta-variables in a production must be unique
@@ -72,6 +72,7 @@
 
 
 (require (for-syntax syntax/parse racket/match racket/list racket/syntax))
+(require racket/stxparam)
 
 ;;; KEYWORDS
 ; The keywords entry and terminals are used by define-language.
@@ -91,23 +92,30 @@
 ; The define-language constructs parses its input into
 ; structures representing terminals and nonterminals.
 
-(begin-for-syntax
-  (struct terminal    (stx name meta-vars prettifier)  #:prefab)
-  ; name is an identifier, meta-vars is a list of identifeirs and prettifier
-  ; is a syntax-object representing an expression.
-  (struct nonterminal (stx name meta-vars productions) #:prefab #:mutable)
+(begin-for-syntax 
+  (struct language    (stx name entry terminals nonterminals) #:transparent)
+  ; name is an identifier
+  ; entry is an identifier (of a nonterminal)
+  ; terminals and nonterminals are lists of terminals and nonterminals respectively
+  
+  (struct terminal    (stx name meta-vars prettifier)  #:transparent)
+  ; name is an identifier, meta-vars is a list of identifiers and 
+  ; prettifier is a syntax-object representing an expression.
+  
+  (struct nonterminal (stx name meta-vars productions) #:transparent #:mutable)
   ; productions is a list of syntax-objects of the follwing forms:
   ;   terminal-meta-var
   ;   nonterminal-meta-var
-  ;   producition-s-expression
+  ;   production-s-expression
   ;   (keyword . production-s-expression)
   ; where keyword is neither type of meta var.
-  (struct production (stx) #:prefab)
+  
+  (struct production (stx) #:transparent)
   ; stx is used for the syntax location (the original production appearing in define-language)
-  (struct    terminal-production production (terminal)    #:prefab)
-  (struct nonterminal-production production (nonterminal) #:prefab)
+  (struct    terminal-production production (terminal)    #:transparent)
+  (struct nonterminal-production production (nonterminal) #:transparent)
   (struct     keyword-production production 
-    (keyword struct-name field-count field-names field-depths s-exp) #:prefab)
+    (keyword struct-name field-count field-names field-depths s-exp) #:transparent)
   (struct s-exp-production production ())
   ; a keyword production will generate a structure definition with
   ; where field-count is the number of fields,
@@ -117,9 +125,7 @@
   ;              x ...      has depth 1
   ;             (x ...) ... has depth 2
   ;             etc
-  (struct ellipsis (production-s-expression) #:prefab)
-  )
-
+  (struct ellipsis (production-s-expression) #:transparent))
 
 ;;; SYNTAX CLASSES
 ; Define syntax classes to match the grammar of define-language.
@@ -213,6 +219,9 @@
       [(string? s) (strip-string s)]
       [else (error 'strip-meta-var-suffix "expected identifer, symbol, or, string, got:~a" s)])))
 
+;;; COMPILE TIME INFORMATION
+(define-for-syntax defined-languages '())
+
 ;;; define-language
 (define-syntax (define-language stx)
   (define (syntax-error error-msg [stx stx]) (raise-syntax-error 'define-language error-msg stx))
@@ -220,9 +229,9 @@
     [(define-language language-name:id clause:lang-clause ...)
      ;; The components of the define-language construct are:
      (define lang-name    (syntax-e #'language-name))
-     (define entry-names  (filter values (attribute clause.entry-name)))
+     (define entry-names                (filter values (attribute clause.entry-name)))
      (define terminals    (apply append (filter values (attribute clause.terminals))))
-     (define nonterminals (filter values (attribute clause.nonterminal)))
+     (define nonterminals               (filter values (attribute clause.nonterminal)))
      
      (when (empty? nonterminals)
        (syntax-error "At least one nonterminal must be present"))
@@ -569,7 +578,7 @@
                  
                  ; start parsing at the nonterminal named entry
                  (parse-entry se)))
-           (displayln it)
+           ; (displayln it)
            it)
          
          ;;; Example: Handwritten parser.
@@ -601,30 +610,25 @@
                  [_ (error 'parse "got: ~a" se)]))
              (parse-expr se))))
      
-     #;(define the-unparser
-         (let ()
-           (with-syntax ([(unparse-nt ...) (map construct-unparse-nonterminal nonterminals)]
-                         [unparse-lang     (format-id stx "~a-unparse" lang-name)]
-                         [unparse-entry    (format-id stx "unparse-~a" entry-name)])
-             (define (construct-unparse-match-clause nt prod)
-               ...)           
-             #'(define (unparse-lang se)
-                 unparse-nt ...
-                 (unparse-entry se)))))
-     
+
+     (set! defined-languages
+           (cons (language 'stx #'language-name entry-name terminals nonterminals)
+                 defined-languages))
      
      (with-syntax ([(struct-def ...) structs]
-                   [parser-definition the-parser])
-       (syntax/loc stx
+                   [parser-definition the-parser]
+                   [langs defined-languages])
+       (quasisyntax/loc stx
          (begin struct-def ...
-                parser-definition)))
+                parser-definition
+                ; make the language definition available for future expansions
+                #;(begin-for-syntax
+                    (set! defined-languages 'langs)))))]
+    [_
+     (raise-syntax-error 'define-language "expected (define-language name clause ...), got: " stx)]))
      
-     #;(datum->syntax #'here
-                      (list 'quote
-                            (list (list (list "lang-name"   (syntax-e #'lang-name)))
-                                  (list "entry-name"  entry-name)
-                                  (list "terminals"   terminals)
-                                  (list "non-terms"   nonterminals))))]))
+     
+     
 
 (define (uvar? x)      (symbol? x))
 (define (primitive? x) (and (symbol? x) (member x '(+ - add1))))
@@ -648,7 +652,7 @@
         (pr e* ...)
         (call e e* ...)))
 
-(define-language LP
+#;(define-language LP
   (terminals
    (uvar (x))
    (datum (d))
@@ -665,3 +669,80 @@
         (let ((x e) ...) body1 ... body2)
         (letrec ((x e) ...) body1 ... body2)
         (e0 e1 ...)))
+
+
+
+#;(with-language LP Expr
+    (construct (if 1 2 3)))
+; =>
+;(LP:Expr:if 1 2 3)
+
+; Note: If more than one nonterminal has an if production, 
+;       then the Expr can't be omitted.
+
+; (with-language LP Expr
+;    (construct (if 1 2 (unconstruct (if 3 4 5)))))
+; => 
+; (LP:Expr:if 1 2 (if 3 4 5))
+; =
+; (LP:Expr:if 1 2 4)
+
+(define-syntax-parameter construct (λ (stx) #'(error 'construct "used outside with-language")))
+
+(define-syntax (with-language stx)
+  (syntax-parse stx
+    [(_ lang-name:id nonterminal-name:id body:expr ...)
+     (define lang (for/first ([l defined-languages]
+                              #:when 
+                              (begin (displayln (list #'lang-name (language-name l)))
+                                     (free-identifier=? #'lang-name (language-name l))))
+                    l))
+     (unless lang (raise-syntax-error 'with-language "undefined language" #'lang-name))
+     (match-define (language stx name entry terminals nonterminals) lang)
+     #'(syntax-parameterize 
+        ([construct 
+          (λ (so)
+            (syntax-parse so
+              [(_ e:expr)
+               (with-syntax ([if-constructor 
+                              (qualified-struct-name so 'lang-name 'nonterminal-name 'if)]
+                             [if (datum->syntax so 'if)])                 
+                 #'(let ([if if-constructor])
+                     e))]))])
+        body ...)]))
+
+#;(define-language L0 (extends LP)
+  (Expr (e body)
+        (- d
+           x
+           pr
+           (e0 e1 ...))
+        (+ (datum d)
+           (var x)
+           (primapp pr e ...)
+           (app e0 e1 ...))))
+
+(define-language L0 
+  (terminals
+   (uvar (x))
+   (datum (d))
+   (primitive (pr)))
+  (Expr (e body)
+        (datum d)
+        (var x)
+        (primapp pr e ...)
+        (app e0 e1 ...)
+        (set! x e)
+        ; (if e1 e2)
+        (if e1 e2 e3)
+        (begin e1 ... e2)
+        (lambda (x ...)     body1 ... body2)
+        (let    ((x e) ...) body1 ... body2)
+        (letrec ((x e) ...) body1 ... body2)))
+
+
+
+(with-language Lsrc Expr (if 42 43 44))
+(with-language Lsrc Expr (construct (if 42 43 44)))
+(with-language L0 Expr 43)
+
