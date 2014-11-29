@@ -7,7 +7,8 @@
 ;;;         - check References to meta-variables in a production must be unique
 ;;;         - handle keywords that appear in multiple clauses such as (if e0 e1) and (if e0 e1 e2)
 ;;;         - unparsing
-;;;         - construction
+;;;         - with-language + construct
+;;;         - unconstruct
 ;;; TODO
 ;;;         - should ... be disallowed as a keyword?
 
@@ -93,10 +94,11 @@
 ; structures representing terminals and nonterminals.
 
 (begin-for-syntax 
-  (struct language    (stx name entry terminals nonterminals) #:transparent)
+  (struct language    (stx name entry terminals nonterminals keywords+constructors) #:transparent)
   ; name is an identifier
   ; entry is an identifier (of a nonterminal)
   ; terminals and nonterminals are lists of terminals and nonterminals respectively
+  ; keywords+constructors is a list of elements of the form (list keyword struct-name)
   
   (struct terminal    (stx name meta-vars prettifier)  #:transparent)
   ; name is an identifier, meta-vars is a list of identifiers and 
@@ -417,6 +419,19 @@
                      )]
                   [_ (error)]))]
              [_ (error)]))))
+     ; keep a list of keywords and corresponding constructor names for later use
+     (define keywords+constructors 
+       (apply append
+         (for/list ([nt nonterminals])
+           (match nt
+             [(nonterminal nt-stx nt-name meta-vars productions)
+              (for/list ([prod productions]
+                         #:when (keyword-production? prod))
+                (match prod
+                  [(keyword-production stx keyword struct-name 
+                                       field-count field-names field-depths s-exp)
+                   (list keyword struct-name)]))]))))
+     
      (define the-parser
        (with-syntax ([ooo #'(... ...)] [failure #'failure])
          (define (nonterminal->parse-name nt depth [suffix ""])
@@ -610,9 +625,10 @@
                  [_ (error 'parse "got: ~a" se)]))
              (parse-expr se))))
      
-
+     
      (set! defined-languages
-           (cons (language 'stx #'language-name entry-name terminals nonterminals)
+           (cons (language 'stx #'language-name 
+                           entry-name terminals nonterminals keywords+constructors)
                  defined-languages))
      
      (with-syntax ([(struct-def ...) structs]
@@ -626,9 +642,9 @@
                     (set! defined-languages 'langs)))))]
     [_
      (raise-syntax-error 'define-language "expected (define-language name clause ...), got: " stx)]))
-     
-     
-     
+
+
+
 
 (define (uvar? x)      (symbol? x))
 (define (primitive? x) (and (symbol? x) (member x '(+ - add1))))
@@ -653,22 +669,22 @@
         (call e e* ...)))
 
 #;(define-language LP
-  (terminals
-   (uvar (x))
-   (datum (d))
-   (primitive (pr)))
-  (Expr (e body)
-        d
-        x
-        pr
-        (set! x e)
-        ; (if e1 e2)
-        (if e1 e2 e3)
-        (begin e1 ... e2)
-        (lambda (x ...) body1 ... body2)
-        (let ((x e) ...) body1 ... body2)
-        (letrec ((x e) ...) body1 ... body2)
-        (e0 e1 ...)))
+    (terminals
+     (uvar (x))
+     (datum (d))
+     (primitive (pr)))
+    (Expr (e body)
+          d
+          x
+          pr
+          (set! x e)
+          ; (if e1 e2)
+          (if e1 e2 e3)
+          (begin e1 ... e2)
+          (lambda (x ...) body1 ... body2)
+          (let ((x e) ...) body1 ... body2)
+          (letrec ((x e) ...) body1 ... body2)
+          (e0 e1 ...)))
 
 
 
@@ -692,35 +708,33 @@
 (define-syntax (with-language stx)
   (syntax-parse stx
     [(_ lang-name:id nonterminal-name:id body:expr ...)
-     (define lang (for/first ([l defined-languages]
-                              #:when 
-                              (begin (displayln (list #'lang-name (language-name l)))
-                                     (free-identifier=? #'lang-name (language-name l))))
+     (define lang (for/first ([l defined-languages] 
+                              #:when (free-identifier=? #'lang-name (language-name l)))
                     l))
      (unless lang (raise-syntax-error 'with-language "undefined language" #'lang-name))
-     (match-define (language stx name entry terminals nonterminals) lang)
-     #'(syntax-parameterize 
-        ([construct 
-          (λ (so)
-            (syntax-parse so
-              [(_ e:expr)
-               (with-syntax ([if-constructor 
-                              (qualified-struct-name so 'lang-name 'nonterminal-name 'if)]
-                             [if (datum->syntax so 'if)])                 
-                 #'(let ([if if-constructor])
-                     e))]))])
-        body ...)]))
+     (match-define (language stx name entry terminals nonterminals keywords+constructors) lang)
+     (with-syntax ([((keyword constructor) ...) keywords+constructors]
+                   [(qualified-constructor ...) (map second keywords+constructors)])
+       #'(syntax-parameterize 
+          ([construct 
+            (λ (so)
+              (syntax-parse so
+                [(__ e:expr)
+                 (with-syntax ([keyword (datum->syntax so 'keyword)] ...)
+                   #'(let ([keyword qualified-constructor] ...)
+                       e))]))])
+          body ...))]))
 
 #;(define-language L0 (extends LP)
-  (Expr (e body)
-        (- d
-           x
-           pr
-           (e0 e1 ...))
-        (+ (datum d)
-           (var x)
-           (primapp pr e ...)
-           (app e0 e1 ...))))
+    (Expr (e body)
+          (- d
+             x
+             pr
+             (e0 e1 ...))
+          (+ (datum d)
+             (var x)
+             (primapp pr e ...)
+             (app e0 e1 ...))))
 
 (define-language L0 
   (terminals
@@ -740,9 +754,8 @@
         (let    ((x e) ...) body1 ... body2)
         (letrec ((x e) ...) body1 ... body2)))
 
-
-
 (with-language Lsrc Expr (if 42 43 44))
 (with-language Lsrc Expr (construct (if 42 43 44)))
 (with-language L0 Expr 43)
-
+(with-language L0 Expr 
+  (construct (begin 4 (if 1 2 3))))
