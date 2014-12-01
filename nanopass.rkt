@@ -94,7 +94,8 @@
 ; structures representing terminals and nonterminals.
 
 (begin-for-syntax 
-  (struct language    (stx name entry terminals nonterminals keywords+constructors) #:transparent)
+  (struct language    (stx name entry terminals nonterminals keywords+constructors
+                           metavars-ht) #:transparent)
   ; name is an identifier
   ; entry is an identifier (of a nonterminal)
   ; terminals and nonterminals are lists of terminals and nonterminals respectively
@@ -225,171 +226,254 @@
 (define-for-syntax defined-languages '())
 
 
+;;; METAVARIABLES
+; Each terminal and nonterminal has an associated set of (normally short) names
+; used to refer to them in productions. These abbreviations are called metavariables.
+; The producedure parse-defined-language produce a hash table which maps
+; metavariables (identifiers) to their terminal or nonterminal (represented as syntax-objects).
+(begin-for-syntax
+  (define (meta-vars-ref ht v)
+    (unless (identifier? v) (error 'meta-vars-ref "got ~a" v))
+    (hash-ref  ht (strip-meta-var-suffix (syntax-e v)) #f))
+  
+  (define (meta-vars-set! ht v a) 
+    (hash-set! ht (strip-meta-var-suffix (syntax-e v)) a))
+  
+  (define (register-meta-var ht v a)
+    (cond [(meta-vars-ref ht v) (raise-meta-var-error v)]
+          [else                 (meta-vars-set! ht v a)]))
+  
+  
+  
+  ; The error message will highlight the second use of a meta variable 
+  (define (raise-meta-var-error v)
+    (raise-syntax-error 'define-language 
+                        "a metavariable can only be associated to one terminal or nonterminal"
+                        v))
+  (define (terminal-meta-var? ht v)
+    ; ht is usually metavars-ht
+    (cond [(meta-vars-ref ht v) => terminal?]
+          [else #f]))
+  (define (nonterminal-meta-var? ht v)
+    (cond [(meta-vars-ref ht v) => nonterminal?]
+          [else #f]))
+  (define (meta-var? ht v)
+    (match v
+      [(? identifier?) (meta-vars-ref ht v)]
+      [(ellipsis v)    (meta-var? v)]
+      [_               #f])))
+
+(begin-for-syntax
+  (define (parse-define-language stx)
+    (define (syntax-error error-msg [stx stx]) (raise-syntax-error 'define-language error-msg stx))
+    (syntax-parse stx
+      [(define-language language-name:id clause:lang-clause ...)
+       ;; 1. Find language and entry name, gather terminals and nonterminals.
+       (define lang-name    (syntax-e #'language-name))
+       (define entry-names                (filter values (attribute clause.entry-name)))
+       (define terminals    (apply append (filter values (attribute clause.terminals))))
+       (define nonterminals               (filter values (attribute clause.nonterminal)))
+       ;; 2. Check terminals
+       ;     (TODO: check that the terminal names are unique)
+       (when (empty? nonterminals)
+         (syntax-error "At least one nonterminal must be present"))
+       ;; 3. Find entry name and make sure there is only one.
+       ;;    If none are present, use the name of the first nonterminal.
+       (define entry-name
+         (match entry-names
+           [(list)      (nonterminal-name (first nonterminals))]
+           [(list name) name]
+           [__ (raise-syntax-error 'define-language "only one entry is allowed" stx)]))
+       ;; 4.   Check that metavariables refer to one terminal or nonterminal only.
+       ;; 4.a  Create hash table from a metavariable to its terminal or nonterminal
+       (define meta-vars-ht (make-hash))
+       
+       ;; 4.b Insert all terminal and nonterminal metavariables in hash table.
+       ;;     This also checks for duplicates (see register meta-var)
+       (for ([t terminals])
+         (for ([v (terminal-meta-vars t)])
+           (register-meta-var meta-vars-ht v t)))
+       (for ([nt nonterminals])
+         (for ([v (nonterminal-meta-vars nt)])
+           (register-meta-var meta-vars-ht v nt)))
+       ;; 4.c We can now determine what kind of metavariable an identifier refers to.
+       ;;     See terminal-meta-var? and nonterminal-meta-var?
+       
+       ;; 5.  Collect all keywords and store the associated production.
+       ;; 5.a Create hash table from a keyword to its production
+       (define keywords-ht (make-hash))
+       (define (keywords-ref v)    
+         (hash-ref keywords-ht (strip-meta-var-suffix (syntax-e v)) #f))
+       (define (keywords-set! v p) 
+         (define old-productions (hash-ref keywords-ht (strip-meta-var-suffix (syntax-e v)) '()))
+         (hash-set! keywords-ht (strip-meta-var-suffix (syntax-e v)) (list p old-productions)))
+       (define (register-keyword k nt p) 
+         ; todo: add additional checks here
+         (keywords-set! k (list nt p)))
+       ;; 5.b Each production of a nonterminal can potentially introduce a new keyword.
+       ;;     Run through them and store them.
+       (for ([nt nonterminals])
+         (for ([prod (nonterminal-productions nt)])
+           (syntax-parse prod #:literals (maybe)
+             [x:id 
+              ; A reference to another nonterminal or a terminal is ok. Other references are errors.
+              (unless (meta-vars-ref meta-vars-ht #'x)
+                (syntax-error 
+                 "variable in production is not associated to a terminal or a nonterminal" #'x))]
+             [(x:id . _)
+              (if (meta-vars-ref meta-vars-ht #'x)
+                  (void) ; (x . _) is an application of where x stands for a terminal or a nonterminal
+                  (register-keyword #'x nt prod))] ; a new constructs implies a new keyword
+             [(maybe meta-var)   'todo-a-maybe-production]
+             [(something . more) 'todo-an-application-production] ; TODO: remove
+             [__ 'ok])))
+       ;; 6. At this point the representation of productions changes from syntax objects
+       ;;    to a structure representation. There are four types of productions:
+       ;;        (struct production (stx))
+       ;;        (struct    terminal-production production (terminal))
+       ;;        (struct nonterminal-production production (nonterminal))
+       ;;        (struct     keyword-production production 
+       ;;                            (keyword struct-name field-count field-names field-depths s-exp))
+       ;;        (struct s-exp-production production ())
+       
+       ;; 6.a Processing the productions in syntax object form is easier,
+       ;;     we rewrite ellipsis patterns to prefix i.e. pat ... besomes (ellipsis pat)
+       (define (maybe?    stx) (and (identifier? stx) (eq? (syntax-e stx) 'maybe)))
+       (define (make-ellipsis-prefix se)
+         (define (mvar? v) (meta-var? meta-vars-ht v))
+         (define (ellipsis? stx) (eq? (syntax-e stx) '...))
+         (define (recur se)
+           (match (or (syntax-pair? se) se)
+             [(? identifier? v)               (if (meta-var? meta-vars-ht v) v (error 'here "foo"))]
+             [(? syntax? s)                   (recur (syntax-e s))]
+             [(list (? maybe?) (? mvar?))     se]   ; todo: ntroduce maybe struct ?
+             [(cons (? maybe?) _)             (raise-syntax-error 
+                                               'define-language "(maybe meta-var) expected" se)]
+             [(list se0 (? ellipsis?))        (list (ellipsis (recur se0)))]
+             [(list se0 (? ellipsis?) se* ... sen)
+              (cons (ellipsis (recur se0)) (append (map recur se*) (list (recur sen))))]
+             [(cons se0 se1)                  (cons (recur se0) (recur se1))]
+             ['()                             '()]
+             [_ 
+              (raise-syntax-error 'define-language "not allowed in production-s-expression"
+                                  se)]))
+         (recur se))
+       ;; 6.b Generate the structure representation for nonterminals, 
+       ;;     here the hardest case the keyword production.  
+       ;   production-clause = | (keyword . production-s-expr)
+       ;   production-s-expr = meta-variable
+       ;                     | (maybe meta-variable)
+       ;                     | (production-s-expr ellipsis)
+       ;                     | (production-s-expr ellipsis production-s-expr ... . prod-s-expr)
+       ;                     | (production-s-expr . production-s-expr)
+       ;                     | ()              
+       (define (generate-keyword-production prod x fields s-exp nt ps)
+         ; the production has the form (x field ...) and x is a keyword
+         ; and orig-nt and ps are the result of (keyword-ref #'x)
+         (with-syntax ([x x] [(field ...) fields] [s-exp s-exp])
+           ;; 6.b.1 Each keyword have a struct associated.
+           ;;       The fields of the struct consists of the pattern variables
+           ;;       present in the s-expressions of (keyword s-exp ...).
+           ;;       First we must extract the names of the pattern variables.
+           ;;       At the same time we determine their depth.
+           ;;       x in x has depth 0,  x in x ... depth 1,  x in (x ...) ... depth 2 etc
+           (struct extracted-name (name depth) #:prefab)
+           (define (extract-names se)
+             (displayln (list 'extract-names
+                              se
+                              (hash-keys meta-vars-ht)))
+             (define (meta-var? v)
+               (define ht meta-vars-ht)
+               (match v
+                 [(? identifier?) (meta-vars-ref ht v)]
+                 [(ellipsis v)    (meta-var? v)]
+                 [_               #f]))
+             (define (recur se d)
+               (define (map-recur se* d) (map (λ (se) (recur se d)) se*))
+               (match (if (and (syntax? se) (not (identifier? se)))
+                          (syntax-e se)
+                          se)
+                 [(ellipsis se)                         (recur se d)]
+                 [(? meta-var? v)                       (list (extracted-name v d))]
+                 [(list (ellipsis se) se* ...)          (list (recur se (+ d 1))
+                                                              (map-recur se* d))]
+                 [(list (? maybe?) (? meta-var? v))     (list v)]
+                 [(cons se0 se1)                        (list (recur se0 d) (recur se1 d))]
+                 ['()                                   '()]                                  
+                 [_ (error 'extract-names "got~a" se)]))
+             (flatten (recur se 0)))
+           (define extracted-names (extract-names (make-ellipsis-prefix #'(field ...))))
+           (displayln (list 'extracted: #'x (syntax->datum #'(field ...)) extracted-names))
+           ;; 6.b.2 The name of the struct, names of fields and their depths are now ready.
+           (define fields       (map extracted-name-name  extracted-names))
+           (define field-depths (map extracted-name-depth extracted-names))
+           (define keyword #'x)
+           (define field-count (length fields))
+           (define struct-name 
+             (qualified-struct-name prod lang-name (nonterminal-name nt) keyword))
+           (define field-names (for/list ([f fields])
+                                 (match f 
+                                   [(ellipsis name) name]
+                                   [_ f])))
+           ;; 6.b.3 Store all information in a keyword-production.
+           (keyword-production prod keyword struct-name 
+                               field-count field-names field-depths 
+                               (make-ellipsis-prefix #'s-exp))))
+       ;; 6.c Finally we can generate the production structures
+       (for ([nt nonterminals])
+         (define prods
+           (for/list ([prod (nonterminal-productions nt)])
+               (syntax-parse prod #:literals (maybe)
+                 [x:id 
+                  (match (meta-vars-ref meta-vars-ht #'x)
+                    [(? terminal? t)     (terminal-production prod t)]
+                    [(? nonterminal? nt) (nonterminal-production prod nt)]
+                    [_ (error 'define-language "internal error - expected earlier detection")])]
+                 [(maybe meta-var)   (error 'todo-a-maybe-production)]
+                 [(~and (x:id field ...) (_ . s-exp))
+                  (match (keywords-ref #'x)
+                    [(list orig-nt ps)
+                     (generate-keyword-production prod #'x #'(field ...) #'s-exp nt ps)]
+                    ;; otherwise it is an s-exp-production
+                    [_ (s-exp-production (make-ellipsis-prefix prod))])]
+                 ; an s-exp-production that doesn't begin with a terminal or nonterminal
+                 ; TODO: Is this case impossible?
+                 [(something . more) (s-exp-production prod prod)]
+                 [__ 'ok])))
+         ; replace old contents of productions field in the nonterminal with
+         ; the structure representation of productions
+         (set-nonterminal-productions! nt prods))
+       ; (displayln (list 'define-language 'productions: ))
+       ; (displayln prods)
+       
+       ; keep a list of keywords and corresponding constructor names for later use
+       (define keywords+constructors 
+         (apply append
+           (for/list ([nt nonterminals])
+             (match nt
+               [(nonterminal nt-stx nt-name meta-vars productions)
+                (for/list ([prod productions]
+                           #:when (keyword-production? prod))
+                  (match prod
+                    [(keyword-production stx keyword struct-name 
+                                         field-count field-names field-depths s-exp)
+                     (list keyword struct-name)]))]))))
+       
+       (language 'stx #'language-name 
+                 entry-name terminals nonterminals keywords+constructors
+                 meta-vars-ht)])))
+;;; 
 
 ;;; define-language
 (define-syntax (define-language stx)
   (define (syntax-error error-msg [stx stx]) (raise-syntax-error 'define-language error-msg stx))
   (syntax-parse stx
     [(define-language language-name:id clause:lang-clause ...)
-     ;; The components of the define-language construct are:
-     (define lang-name    (syntax-e #'language-name))
-     (define entry-names                (filter values (attribute clause.entry-name)))
-     (define terminals    (apply append (filter values (attribute clause.terminals))))
-     (define nonterminals               (filter values (attribute clause.nonterminal)))
-     
-     (when (empty? nonterminals)
-       (syntax-error "At least one nonterminal must be present"))
-     
-     (define entry-name
-       ; If no entry name is defined, then the entry is the first nonterminal
-       (match entry-names
-         [(list)      (nonterminal-name (first nonterminals))]
-         [(list name) name]
-         [__ (raise-syntax-error 'define-language "only one entry is allowed" stx)]))
-     
-     ;; Check that all meta variables are associated with only one terminal or nonterminal
-     ; First we define a hash table that associates a meta variable to its terminal or nonterminal
-     (define meta-vars-ht (make-hash))
-     (define (meta-vars-ref  v)   
-       (unless (identifier? v) (error 'here "got ~a" v))
-       (hash-ref  meta-vars-ht (strip-meta-var-suffix (syntax-e v)) #f))
-     (define (meta-vars-set! v a) (hash-set! meta-vars-ht (strip-meta-var-suffix (syntax-e v)) a))
-     (define (meta-var? v) 
-       (match v
-         [(? identifier?) (meta-vars-ref v)]
-         [(ellipsis v)    (meta-var? v)]
-         [_               #f]))
-     ; The error message will highlight the second use of a meta variable 
-     (define (raise-meta-var-error v)
-       (raise-syntax-error 'define-language 
-                           "a meta variable can only be associated to one terminal or nonterminal"
-                           v))
-     (define (register-meta-var v a)
-       (cond [(meta-vars-ref v) (raise-meta-var-error v)]
-             [else              (meta-vars-set! v a)]))
-     ; Check them
-     (for ([t terminals])
-       (for ([v (terminal-meta-vars t)])
-         (register-meta-var v t)))
-     (for ([nt nonterminals])
-       (for ([v (nonterminal-meta-vars nt)])
-         (register-meta-var v nt)))
-     ;; At this point all meta variables are stored in meta-vars-ht.
-     (define (terminal-meta-var? v)
-       (cond [(meta-vars-ref v) => terminal?]
-             [else #f]))
-     (define (nonterminal-meta-var? v)
-       (cond [(meta-vars-ref v) => nonterminal?]
-             [else #f]))
-     
-     ;; Collect all keywords used in the productions and store the associated productions.
-     (define keywords-ht (make-hash))
-     (define (keywords-ref v)    (hash-ref keywords-ht (strip-meta-var-suffix (syntax-e v)) #f))
-     (define (keywords-set! v p) 
-       (define old-productions (hash-ref keywords-ht (strip-meta-var-suffix (syntax-e v)) '()))
-       (hash-set! keywords-ht (strip-meta-var-suffix (syntax-e v)) (list p old-productions)))
-     (define (register-keyword k nt p) 
-       ; todo: add additional checks here
-       (keywords-set! k (list nt p)))
-     (for ([nt nonterminals])
-       (for ([prod (nonterminal-productions nt)])
-         (syntax-parse prod #:literals (maybe)
-           [x:id (unless (meta-vars-ref #'x)
-                   (syntax-error 
-                    "variable in production is not associated to a terminal or a nonterminal" #'x))]
-           [(x:id . _)
-            (unless (meta-vars-ref #'x)
-              (register-keyword #'x nt prod))]
-           [(maybe meta-var)   'todo-a-maybe-production]
-           [(something . more) 'todo-an-application-production]
-           [__ 'ok])))
-     ;; This helper is needed to rewrite s-exprs such that pat ... becomes (ellipsis pat)
-     (define (maybe?    stx) (and (identifier? stx) (eq? (syntax-e stx) 'maybe)))
-     (define (make-ellipsis-prefix se)
-       (define (ellipsis? stx) (eq? (syntax-e stx) '...))
-       (define (recur se)
-         (match (or (syntax-pair? se) se)
-           [(? identifier? v)               (if (meta-var? v) v (error 'here "foo"))]
-           [(? syntax? s)                   (recur (syntax-e s))]
-           [(list (? maybe?) (? meta-var?)) se]   ; todo: ntroduce maybe struct ?
-           [(cons (? maybe?) _)             (raise-syntax-error 
-                                             'define-language "(maybe meta-var) expected" se)]
-           [(list se0 (? ellipsis?))        (list (ellipsis (recur se0)))]
-           [(list se0 (? ellipsis?) se* ... sen)
-            (cons (ellipsis (recur se0)) (append (map recur se*) (list (recur sen))))]
-           [(cons se0 se1)                  (cons (recur se0) (recur se1))]
-           ['()                             '()]
-           [_ 
-            (raise-syntax-error 'define-language "not allowed in production-s-expression"
-                                se)]))
-       (recur se))
-     ;; Now we can categorize the productions in the nonterminals
-     (for ([nt nonterminals])
-       (define prods
-         (for/list ([prod (nonterminal-productions nt)])
-           (syntax-parse prod #:literals (maybe)
-             [x:id 
-              (match (meta-vars-ref #'x)
-                [(? terminal? t)     (terminal-production prod t)]
-                [(? nonterminal? nt) (nonterminal-production prod nt)]
-                [_ (error 'define-language "internal error - expected earlier detection")])]
-             [(maybe meta-var)   (error 'todo-a-maybe-production)]
-             [(~and (x:id field ...) (_ . s-exp))
-              (match (keywords-ref #'x)
-                [(list orig-nt ps)
-                 ;; x is a keyword ...
-                 ;; In order to make later processing easier we 
-                 ;; rewrite the s-exp such that  s-exp ...  becomes (ellipsis s-exp)
-                 
-                 ; todo: should (ellipsis (maybe mv)) also count as a maybe?
-                 
-                 ;   production-s-expr = meta-variable
-                 ;                  | (maybe meta-variable)
-                 ;                  | (production-s-expr ellipsis)
-                 ;                  | (production-s-expr ellipsis production-s-expr ... . prod-s-expr)
-                 ;                  | (production-s-expr . production-s-expr)
-                 ;                  | ()
-                 (struct extracted-name (name depth) #:prefab)
-                 (define (extract-names se)
-                   (define (recur se d)
-                     (define (map-recur se* d) (map (λ (se) (recur se d)) se*))
-                     (match (if (and (syntax? se) (not (identifier? se)))
-                                (syntax-e se)
-                                se)
-                       [(ellipsis se)                     (recur se d)]
-                       [(? meta-var? v)                   (list (extracted-name v d))]
-                       [(list (ellipsis se) se* ...)      (list (recur se (+ d 1))
-                                                                (map-recur se* d))]
-                       [(list (? maybe?) (? meta-var? v)) (list v)]
-                       [(cons se0 se1)                    (list (recur se0 d) (recur se1 d))]
-                       ['()                               '()]
-                       [_ (error 'extract-names "got~a" se)]))
-                   (flatten (recur se 0)))
-                 (define extracted-names (extract-names (make-ellipsis-prefix #'(field ...))))
-                 (define fields       (map extracted-name-name  extracted-names))
-                 (define field-depths (map extracted-name-depth extracted-names))
-                 (define keyword #'x)
-                 (define field-count (length fields))
-                 (define struct-name 
-                   (qualified-struct-name prod lang-name (nonterminal-name nt) keyword))
-                 (define field-names (for/list ([f fields])
-                                       (match f 
-                                         [(ellipsis name) name]
-                                         [_ f])))
-                 (keyword-production prod keyword struct-name field-count field-names field-depths 
-                                     (make-ellipsis-prefix #'s-exp))]
-                ;; otherwise it is an s-expression
-                [_ (s-exp-production (make-ellipsis-prefix prod))])]
-             [(something . more) (s-exp-production prod prod)]
-             [__ 'ok])))
-       ; replace old contents of productions field in the nonterminal with
-       ; the structure representation of productions
-       (set-nonterminal-productions! nt prods)
-       ; (displayln (list 'define-language 'productions: ))
-       ; (displayln prods)
-       )
-     
-     
+     (define parsed-lang (parse-define-language stx))
+     ; (displayln (list 'parsed-lang parsed-lang)) (newline)
+     (match-define 
+       (language _ lang-name entry-name terminals nonterminals keywords+constructors metavars-ht) 
+       parsed-lang)
      (define all-terminal-meta-vars    (append-map terminal-meta-vars terminals))
      
      ;; At this point we are ready to 
@@ -421,18 +505,7 @@
                      )]
                   [_ (error)]))]
              [_ (error)]))))
-     ; keep a list of keywords and corresponding constructor names for later use
-     (define keywords+constructors 
-       (apply append
-         (for/list ([nt nonterminals])
-           (match nt
-             [(nonterminal nt-stx nt-name meta-vars productions)
-              (for/list ([prod productions]
-                         #:when (keyword-production? prod))
-                (match prod
-                  [(keyword-production stx keyword struct-name 
-                                       field-count field-names field-depths s-exp)
-                   (list keyword struct-name)]))]))))
+     
      
      (define the-parser
        (with-syntax ([ooo #'(... ...)] [failure #'failure])
@@ -441,7 +514,7 @@
            (case depth
              [(0)   (format-id stx "parse-~a~a"  (nonterminal-name nt) suffix)]
              [else  (format-id stx "parse*-~a~a" (nonterminal-name nt) suffix)]))
-         (define (field-name->nonterminal f)  (meta-vars-ref  f))
+         (define (field-name->nonterminal f)  (meta-vars-ref  metavars-ht f))
          (define (construct-parse-nonterminal nt)
            ; return a parser of s-exp representing the nonterminal nt
            (match-define (nonterminal stx name meta-vars productions) nt)
@@ -476,7 +549,7 @@
              (with-syntax ([ooo #'(... ...)])
                (match (if (syntax-pair? se) (syntax-e se) se)
                  [(? identifier? x)
-                  (define mv (meta-vars-ref x))
+                  (define mv (meta-vars-ref metavars-ht x))
                   (with-syntax ([x x])
                     (list 
                      (match mv
@@ -529,8 +602,8 @@
                             [constructor  (qualified-struct-name stx lang-name nt-name keyword)]
                             [(field-expression ...)
                              (for/list ([f field-names] [fd field-depths])
-                               (cond [(terminal-meta-var? f) f]
-                                     [(nonterminal-meta-var? f)
+                               (cond [(terminal-meta-var? metavars-ht f) f]
+                                     [(nonterminal-meta-var? metavars-ht f)
                                       (with-syntax ([parse-field (nonterminal->parse-name
                                                                   (field-name->nonterminal f) fd)]
                                                     [f f])
@@ -559,7 +632,7 @@
              (with-syntax ([ooo #'(... ...)])
                (match (if (syntax-pair? se) (syntax-e se) se)
                  [(? identifier? x)
-                  (define mv (meta-vars-ref x))
+                  (define mv (meta-vars-ref metavars-ht x))
                   (with-syntax ([x x])
                     (list 
                      (match mv
@@ -628,10 +701,7 @@
              (parse-expr se))))
      
      
-     (set! defined-languages
-           (cons (language 'stx #'language-name 
-                           entry-name terminals nonterminals keywords+constructors)
-                 defined-languages))
+     (set! defined-languages (cons parsed-lang defined-languages))
      
      (with-syntax ([(struct-def ...) structs]
                    [parser-definition the-parser]
@@ -714,7 +784,8 @@
                               #:when (free-identifier=? #'lang-name (language-name l)))
                     l))
      (unless lang (raise-syntax-error 'with-language "undefined language" #'lang-name))
-     (match-define (language stx name entry terminals nonterminals keywords+constructors) lang)
+     (match-define 
+       (language stx name entry terminals nonterminals keywords+constructors metavars-ht) lang)
      (with-syntax ([((keyword constructor) ...) keywords+constructors]
                    [(qualified-constructor ...) (map second keywords+constructors)])
        #'(syntax-parameterize 
@@ -762,3 +833,5 @@
 (with-language L0 Expr 
   (construct 
    (begin 4 (if 1 2 3)))) ; note: begin only takes two arguments -- we need a matcher ?
+
+Lsrc:Expr:if
