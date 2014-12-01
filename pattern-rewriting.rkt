@@ -23,7 +23,6 @@
 
 (module+ test (require rackunit))
 
-
 ;;;
 ;;; STRUCTS
 ;;;
@@ -57,6 +56,10 @@
               [(pair? unwrapped) (cons (car unwrapped) (unwrap (cdr unwrapped)))]
               [else unwrapped])))
       stx))
+
+;;;
+;;; ELLIPSES : TO AND FROM PRE- AND POSTFIX NOTATION
+;;;
 
 ; introduce-prefix-ellipsis : syntax -> syntax
 ;     rewrite   pat ...  into  (... pat)
@@ -121,6 +124,10 @@
       (check-equal? (test (list (ellipsis (list 'x '1))))                '((x 1) ...))
       (check-equal? (test (cons 1 2))                                    '(1 . 2)))))
 
+;;;
+;;; CONVERT A NANOPASS PATTERN TO A MATCH PATTERN
+;;;
+
 ; pattern->match-pattern : syntax predicate predicate predicate -> syntax assoc
 ;     rewrite a nonpass pattern into a match pattern
 ;     in this context a keyword is an identifier (the name of a struct)
@@ -130,6 +137,9 @@
 (define (pattern->match-pattern pattern literal? datum? keyword?)
   (define pvars '())   ; pattern variables detected in pattern
   (define (add-pattern-var! v n) (set! pvars (cons (pattern-variable v n) pvars)))
+  ; Note: The original nanopass requires pattern variables to occur only once.
+  ;       A check could be added in add-pattern-var!, but the Racket macther
+  ;       handles this situation just fine.
   (define (r* is n) (map (λ(i) (r i n)) is))
   (define (r input [n 0])  ; n = ellipsis depth 
     (match (unwrap input)
@@ -173,7 +183,46 @@
       (check-equal? (test #'(mlet (([x e] dots) dots) body))
                     '(list mlet (list (list (list x e) ...) ...) body)))))
 
-; syntax-match : syntax syntax -> environment
-;   the environment is an assocation list from identifiers to matched subforms
-(define (syntax-match pattern input)
-  (syntax-parse input ...))
+;;;
+;;; ENVIRONMENTS
+;;;
+
+(struct unbound () #:transparent)
+
+(define (empty-environment)
+  (λ (id) (unbound)))
+
+(define (extend-environment r id v)
+  (λ (x)
+    (if (free-identifier=? x id)
+        v
+        (r x))))
+
+(define (extend-environment* r ids vs)
+  (unless (= (length ids) (length vs))
+    (error 'extend-environment* "ids and vs must have the same length, got ~a and ~a" ids vs))
+  (for/fold ([r r]) ([id ids] [v vs])
+    (extend-environment r id v)))
+
+(define (environment-lookup r id)
+  (r id))
+
+(module+ test 
+  (check-true (unbound? (environment-lookup (empty-environment) #'x)))
+  (check-true (unbound? (environment-lookup (extend-environment (empty-environment) #'x 42) #'y)))
+  (check-equal?         (environment-lookup (extend-environment (empty-environment) #'x 42) #'x) 42))
+
+
+
+
+
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  

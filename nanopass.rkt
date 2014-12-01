@@ -224,6 +224,8 @@
 ;;; COMPILE TIME INFORMATION
 (define-for-syntax defined-languages '())
 
+
+
 ;;; define-language
 (define-syntax (define-language stx)
   (define (syntax-error error-msg [stx stx]) (raise-syntax-error 'define-language error-msg stx))
@@ -469,7 +471,7 @@
                  ; predicate version of the parsers (usable as match predicates): 
                  (define (parse-nt?  se)   (let/ec return (parse-nt  se   (λ() (return #f)))))
                  (define (parse-nt*? se d) (let/ec return (parse-nt* se d (λ() (return #f))))))))
-         (define (production-s-exp->match-template se)
+         (define (production-s-exp->match-template se) ; for the parser 
            (define (recur se d) ; d=depth
              (with-syntax ([ooo #'(... ...)])
                (match (if (syntax-pair? se) (syntax-e se) se)
@@ -758,4 +760,5 @@
 (with-language Lsrc Expr (construct (if 42 43 44)))
 (with-language L0 Expr 43)
 (with-language L0 Expr 
-  (construct (begin 4 (if 1 2 3))))
+  (construct 
+   (begin 4 (if 1 2 3)))) ; note: begin only takes two arguments -- we need a matcher ?
