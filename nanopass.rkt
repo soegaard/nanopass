@@ -1,4 +1,5 @@
 #lang racket
+(module+ test (require rackunit))
 ;;; TODO
 ;;;   done  - parse define-language into structures
 ;;;   done  - produce pure definitions for nonterminals
@@ -379,9 +380,6 @@
            ;;       x in x has depth 0,  x in x ... depth 1,  x in (x ...) ... depth 2 etc
            (struct extracted-name (name depth) #:prefab)
            (define (extract-names se)
-             (displayln (list 'extract-names
-                              se
-                              (hash-keys meta-vars-ht)))
              (define (meta-var? v)
                (define ht meta-vars-ht)
                (match v
@@ -403,7 +401,6 @@
                  [_ (error 'extract-names "got~a" se)]))
              (flatten (recur se 0)))
            (define extracted-names (extract-names (make-ellipsis-prefix #'(field ...))))
-           (displayln (list 'extracted: #'x (syntax->datum #'(field ...)) extracted-names))
            ;; 6.b.2 The name of the struct, names of fields and their depths are now ready.
            (define fields       (map extracted-name-name  extracted-names))
            (define field-depths (map extracted-name-depth extracted-names))
@@ -423,23 +420,23 @@
        (for ([nt nonterminals])
          (define prods
            (for/list ([prod (nonterminal-productions nt)])
-               (syntax-parse prod #:literals (maybe)
-                 [x:id 
-                  (match (meta-vars-ref meta-vars-ht #'x)
-                    [(? terminal? t)     (terminal-production prod t)]
-                    [(? nonterminal? nt) (nonterminal-production prod nt)]
-                    [_ (error 'define-language "internal error - expected earlier detection")])]
-                 [(maybe meta-var)   (error 'todo-a-maybe-production)]
-                 [(~and (x:id field ...) (_ . s-exp))
-                  (match (keywords-ref #'x)
-                    [(list orig-nt ps)
-                     (generate-keyword-production prod #'x #'(field ...) #'s-exp nt ps)]
-                    ;; otherwise it is an s-exp-production
-                    [_ (s-exp-production (make-ellipsis-prefix prod))])]
-                 ; an s-exp-production that doesn't begin with a terminal or nonterminal
-                 ; TODO: Is this case impossible?
-                 [(something . more) (s-exp-production prod prod)]
-                 [__ 'ok])))
+             (syntax-parse prod #:literals (maybe)
+               [x:id 
+                (match (meta-vars-ref meta-vars-ht #'x)
+                  [(? terminal? t)     (terminal-production prod t)]
+                  [(? nonterminal? nt) (nonterminal-production prod nt)]
+                  [_ (error 'define-language "internal error - expected earlier detection")])]
+               [(maybe meta-var)   (error 'todo-a-maybe-production)]
+               [(~and (x:id field ...) (_ . s-exp))
+                (match (keywords-ref #'x)
+                  [(list orig-nt ps)
+                   (generate-keyword-production prod #'x #'(field ...) #'s-exp nt ps)]
+                  ;; otherwise it is an s-exp-production
+                  [_ (s-exp-production (make-ellipsis-prefix prod))])]
+               ; an s-exp-production that doesn't begin with a terminal or nonterminal
+               ; TODO: Is this case impossible?
+               [(something . more) (s-exp-production prod prod)]
+               [__ 'ok])))
          ; replace old contents of productions field in the nonterminal with
          ; the structure representation of productions
          (set-nonterminal-productions! nt prods))
@@ -469,6 +466,7 @@
   (define (syntax-error error-msg [stx stx]) (raise-syntax-error 'define-language error-msg stx))
   (syntax-parse stx
     [(define-language language-name:id clause:lang-clause ...)
+     ;; 0. Parse the define-language into a language struct.
      (define parsed-lang (parse-define-language stx))
      ; (displayln (list 'parsed-lang parsed-lang)) (newline)
      (match-define 
@@ -478,54 +476,110 @@
      
      ;; At this point we are ready to 
      ;;   1) define structures representing the nonterminals
+     ;;   2) define an parser from s-exps to structures for the language
      ;;   2) save information on the language for define-pass and others
      ;;   3) define an unparser
      
      ;; Ad 1) For each nonterminal production of the form (keyword . production-s-expression)
      ;;       we define a struct lang-name:keyword
      ;; (define-language L (nt (mv ...) (keyword . production-s-expression) ...)
-     ;; will generate structs (struct L:nt:keyword f0 f1 f2 ...) where
-     ;; the number of fields are given by production-s-expression.
+     ;; will generate structs 
+     ;;      (struct L:nt:keyword f0 f1 f2 ...) 
+     ;; where f0, f1, ... are the pattern variables occuring 
+     ;; in production-s-expression.
      
-     (define structs
+     (define struct-definitions-stx
        (apply append
          (for/list ([nt nonterminals])
-           (match nt
-             [(nonterminal nt-stx nt-name meta-vars productions)
-              (for/list ([prod productions]
-                         #:when (keyword-production? prod))
-                (match prod
-                  [(keyword-production stx keyword struct-name field-count field-names field-depths 
-                                       s-exp)
-                   (with-syntax ([struct-name struct-name]
-                                 [(field-name ...) field-names])
-                     ; This is the basic structure definition:
-                     #'(struct struct-name (field-name ...) #:prefab)
-                     ; TODO: Generate constructors with "contracts"
-                     )]
-                  [_ (error)]))]
-             [_ (error)]))))
+           (match-define (nonterminal nt-stx nt-name meta-vars productions) nt)
+           (for/list ([prod productions]
+                      #:when (keyword-production? prod))
+             (match-define
+               (keyword-production stx keyword struct-name field-count field-names field-depths s-exp) 
+               prod)
+             (with-syntax ([struct-name struct-name]
+                           [(field-name ...) field-names])
+               ; This is the basic structure definition:
+               #'(struct struct-name (field-name ...) #:prefab)
+               ; TODO: Generate constructors with "contracts"
+               )))))
      
+     ;; Ad 2) 
+     ;; 
+     ;; Generate definitions for a parser from s-exps to our language structures.
+     ;; An example of the structure of such an parser.
+     ;; To parse the language L a parser parse-L is defined.
+     ;; In its body there are parsers for each nonterminal (in the example Expr).
+     ;; The body of parse-L simply calls the parser associated with the entry nonterminal.
      
-     (define the-parser
+     #;(define (parse-L se)
+         ; 1) define parsers for each nonterminal
+         ; 2) call the entry parser
+         (define (parse-Expr se)
+           (define p parse-expr)
+           (define (p* se*) (map p se*))
+           (match se
+             ;; For each terminal named name a clause [(? name? x) x]
+             ;; is generated - the user has must provide bindings for name?.
+             [(? uvar? x)        x]
+             [(? primitive? pr) pr]
+             [(? datum? d)       d]
+             ;; For each keyword k we need to a pattern that matches (k . prod-s-exp).
+             ;;      (list 'k . <more>)
+             ;; here <more> is generated by   construct-parse-clause.
+             ;; The corresponding template that actually constructs the structure
+             ;; is generated by  production-s-exp->match-template.
+             ;; A pattern variable of depth 0 becomes (p e) in the template.
+             ;; A pattern variable of depth 1 becomes (p* e) = (map p e) in the template.
+             ;; A pattern variable of depth 2 becomes (p** e) == (map p* e) in the template.
+             ;; etc 
+             [(list 'quote (? datum? d))                  (Lsrc:Expr:quote d)]
+             [(list 'if    e0 e1 e2)                      (Lsrc:Expr:if (p e0) (p e1) (p e2))]
+             [(list 'begin e* ooo e)                      (Lsrc:Expr:begin (p* e*) (p e))]
+             [(list 'lambda (list (? uvar? x*) ooo) body) (Lsrc:Expr:lambda x* (p body))]
+             [(list 'let    (list [list x* e*] ooo) body) (Lsrc:Expr:let    x* (p* e*) (p body))]
+             [(list 'letrec (list [list x* e*] ooo) body) (Lsrc:Expr:letrec x* (p* e*) (p body))]
+             [(list 'set!   (? uvar? x) e)                (Lsrc:Expr:set!   x  (p e))]
+             [(list 'call e e* ooo)                       (Lsrc:Expr:call   (p e) (p* e*))]
+             [(list (? primitive? pr) e* ooo)             (cons pr (p* e*))]
+             [_ (error 'parse "got: ~a" se)]))
+         ; the entry is Expr:
+         (parse-Expr se))
+     
+     (define parser-definition-stx
        (with-syntax ([ooo #'(... ...)] [failure #'failure])
-         (define (nonterminal->parse-name nt depth [suffix ""])
-           ; suffix can be used to append a trailing "?"
+         ;; Due to metavariables (pattern variables) of different depth,
+         ;; the parser for depth 0 is called, say, parse-Expr
+         ;; and the parser for larger depths parse*-Expr.
+         ;; Due to nonterminal used as alternatives, we need
+         ;; two versions of each: one that signals an error when 
+         ;; parsing the nonterminal fails, and one that simple returns #f.         
+         ; nonterminal->parse-name
+         ;   generate suitable name
+         ;   suffix can be used to append a trailing "?"
+         (define (nonterminal->parse-name nt depth [suffix ""])           
            (case depth
              [(0)   (format-id stx "parse-~a~a"  (nonterminal-name nt) suffix)]
              [else  (format-id stx "parse*-~a~a" (nonterminal-name nt) suffix)]))
+         ; In order to generate the recursive call, we must know which
+         ; nonterminal whose parser we are going to call.
          (define (field-name->nonterminal f)  (meta-vars-ref  metavars-ht f))
+         
+         ; construct-parse-nonterminal : nonterminal -> syntax
+         ;     return a parser of s-exp representing the nonterminal nt
          (define (construct-parse-nonterminal nt)
-           ; return a parser of s-exp representing the nonterminal nt
+           ; the parser names for the nonterminal
            (match-define (nonterminal stx name meta-vars productions) nt)
            (define parse-nt   (nonterminal->parse-name nt 0))
            (define parse-nt*  (nonterminal->parse-name nt 1))
            (define parse-nt?  (nonterminal->parse-name nt 0 '?))
-           (define parse-nt*? (nonterminal->parse-name nt 1 '?))           
-           (define clauses (append-map (λ(p) (construct-parse-clause name p)) productions))
+           (define parse-nt*? (nonterminal->parse-name nt 1 '?)) 
+           ; Generate the parser clauses
+           (define clauses (append-map (λ(p) (construct-match-clause-for-parser name p)) productions))
            (with-syntax 
-               ([parse-nt parse-nt] [parse-nt* parse-nt*][parse-nt? parse-nt?] [parse-nt*? parse-nt*?]
-                                    [(clause ...) clauses])
+               ([(clause ...) clauses] [parse-nt  parse-nt]  [parse-nt* parse-nt*] 
+                                       [parse-nt? parse-nt?] [parse-nt*? parse-nt*?])
+             ; Put the clauses into parser-nt, then let the other parsers call parse-nt.
              #'(begin
                  ; parse-nt : s-exp [thunk] -> (or <lang:nt:keyword structure> (failure))
                  ;   parse the s-exp and return a struct instance,
@@ -544,7 +598,61 @@
                  ; predicate version of the parsers (usable as match predicates): 
                  (define (parse-nt?  se)   (let/ec return (parse-nt  se   (λ() (return #f)))))
                  (define (parse-nt*? se d) (let/ec return (parse-nt* se d (λ() (return #f))))))))
-         (define (production-s-exp->match-template se) ; for the parser 
+         (define (construct-match-clause-for-parser nt-name prod)
+           (match prod
+             [(terminal-production stx term)
+              (match-define (terminal stx name meta-vars prettifier) term)
+              (with-syntax ([pred? (terminal->predicate-name #'here term)])
+                (list #'[(? pred? x) x]))]
+             [(nonterminal-production stx nonterm)
+              ; The case where the nonterminal nt has another nonterminal as production.
+              ; Use the predicate version of the parser, since the match might fail.
+              (with-syntax ([parse-nonterm? (nonterminal->parse-name nonterm 0 '?)])
+                (list #'[(app parse-nonterm? x) x]))]
+             [(keyword-production stx keyword struct-name field-count field-names field-depths s-exp)
+              ; To match (keyword . production-s-exp) we use production-s-exp->match-pattern
+              ; to transform production-s-exp into a match pattern.
+              ; The template must call constructor to generate a struct of the correct type.
+              ; Each matched pattern variable that corresponds to a nonterminal needs
+              ; to be wrapped in a recursive call. A pattern variable for a terminal
+              ; is used as-is. The "calls" are called field-expression below.
+              
+              ; First the field expressions needed in the template:
+              (define field-expressions
+                (for/list ([f field-names] [fd field-depths])
+                  (cond [(terminal-meta-var? metavars-ht f) 
+                         f] ; as-is
+                        [(nonterminal-meta-var? metavars-ht f)
+                         (with-syntax ([parse-field 
+                                        (nonterminal->parse-name (field-name->nonterminal f) fd)]
+                                       [f f])
+                           (if (= fd 0)
+                               #'(parse-field f failure)
+                               #`(parse-field f #,fd failure)))]
+                        [else (error 'todo1 "got ~a" f)])))
+              ; Now we just need put all the pieces together:
+              (define constructor-name (qualified-struct-name stx lang-name nt-name keyword))
+              (with-syntax ([keyword                keyword]
+                            [(field-name ...)       field-names]
+                            [constructor            constructor-name]
+                            [(field-expression ...) field-expressions])
+                (list #`[(cons 'keyword #,@(production-s-exp->match-pattern s-exp))
+                         (constructor field-expression ...)]))]
+             [(s-exp-production stx)
+              (list #`[#,@(production-s-exp->match-pattern stx) 
+                       #,@(production-s-exp->match-template stx)])]
+             [else (error 'construct-parse-clause "todo got ~a" prod)]))
+         
+         (define (terminal->predicate-name loc t)
+           (format-id loc "~a?" (terminal-name t)))
+         
+         ; production-s-exp->match-template : s-exp -> (list syntax)
+         ;   generate a match template that matches the s-exp
+         ;   Due to ellipsis we return lists of template expressions.
+         ;   Slice them were they are used.
+         (define (production-s-exp->match-template se)
+           ; The recursive call to parser a subexpression depends on the ellipsis
+           ; depth d of the pattern variable. We therefore need to keep track of d.       
            (define (recur se d) ; d=depth
              (with-syntax ([ooo #'(... ...)])
                (match (if (syntax-pair? se) (syntax-e se) se)
@@ -560,23 +668,20 @@
                        [(nonterminal stx name meta-vars productions)
                         (with-syntax ([parse-nt  (nonterminal->parse-name mv 0)]
                                       [parse*-nt (nonterminal->parse-name mv 1)])
-                          ; whatever the nonterminal matched needs to be parsed.
+                          ; Whatever the nonterminal matched needs to be parsed.
                           ; The depths determine how.
                           (match d
-                            [0 #'(parse-nt  x failure)]
+                            [0 #'(parse-nt x failure)]
                             [_ (with-syntax ([d d])
                                  #'(parse*-nt x d failure))]))]
                        [_ ; unrecognized meta variable
                         (displayln se)
                         (error 'production-s-exp->match-pattern "internal error: ~a" se)])))]
+                 ; TODO (support maybe in s-exps at some point)
                  ; [(maybe mv) (error 'production-s-exp->match-pattern "todo: ~a" se)]
                  [(ellipsis se0)
                   (list (recur se0 (+ d 1)))]
                  [(list-rest (ellipsis se0) se* ... sen)
-                  #;(displayln (list se se0 se* sen))
-                  #;(displayln (append (recur se0 (+ d 1))
-                                       (append-map (λ(se) (recur se d)) se*)
-                                       (recur sen d)))
                   (append (recur se0 (+ d 1))
                           (append-map (λ(se) (recur se d)) se*)
                           (recur sen d))]
@@ -585,40 +690,8 @@
                  ['() '()]
                  [_ (error 'production-s-exp->match-pattern "gotx: ~a" se)])))
            (recur se 0))
-         (define (construct-parse-clause nt-name prod)
-           (match prod
-             [(terminal-production stx term)
-              (match-define (terminal stx name meta-vars prettifier) term)
-              (with-syntax ([pred? (terminal->predicate-name #'here term)])
-                (list #'[(? pred? x) x]))]
-             [(nonterminal-production stx nonterm)
-              ; The nonterminal nt has another nonterminal as production.
-              (with-syntax ([parse-nonterm? (nonterminal->parse-name nonterm 0 '?)])
-                (list #'[(app parse-nonterm? x) x]))]
-             [(keyword-production stx keyword struct-name 
-                                  field-count field-names field-depths s-exp)
-              (with-syntax ([keyword keyword]
-                            [(field-name ...) field-names]
-                            [constructor  (qualified-struct-name stx lang-name nt-name keyword)]
-                            [(field-expression ...)
-                             (for/list ([f field-names] [fd field-depths])
-                               (cond [(terminal-meta-var? metavars-ht f) f]
-                                     [(nonterminal-meta-var? metavars-ht f)
-                                      (with-syntax ([parse-field (nonterminal->parse-name
-                                                                  (field-name->nonterminal f) fd)]
-                                                    [f f])
-                                        (if (= fd 0)
-                                            #'(parse-field f failure)
-                                            #`(parse-field f #,fd failure)))]
-                                     [else (error 'todo1 "got ~a" f)]))])
-                (list #`[(cons 'keyword #,@(production-s-exp->match-pattern s-exp))
-                         (constructor field-expression ...)]))]
-             [(s-exp-production stx)
-              (list #`[#,@(production-s-exp->match-pattern stx) 
-                       #,@(production-s-exp->match-template stx)])]
-             [else (error 'construct-parse-clause "todo got ~a" prod)]))
-         (define (terminal->predicate-name loc t)
-           (format-id loc "~a?" (terminal-name t)))
+         
+         
          ;   production-s-expr = meta-variable
          ;                     | (maybe meta-variable)
          ;                     | (production-s-expr ellipsis)
@@ -627,8 +700,12 @@
          ;                     | ()
          ;  where meta-variable is either a terminal-meta-var or a nonterminal-meta-var possibly
          ;  followed by a sequence of ?, * or digits.
+         
+         ; production-s-exp->match-pattern : prodcution-s-exp -> (list syntax)
+         ;    generate match patterns from the prodcution-s-exp
          (define (production-s-exp->match-pattern se)
-           (define (recur se) ; recur returns a list of pattens (due to pat ... patterns)
+           ; due to ellipsis the return value is a list of match patterns
+           (define (recur se) 
              (with-syntax ([ooo #'(... ...)])
                (match (if (syntax-pair? se) (syntax-e se) se)
                  [(? identifier? x)
@@ -640,11 +717,9 @@
                         (with-syntax ([pred? (terminal->predicate-name #'x mv)])
                           #'(? pred? x))]
                        [(nonterminal stx name meta-vars productions)
-                        #'x]
-                       [_ 
-                        (displayln se)
-                        (error 'production-s-exp->match-pattern "goty: ~a" se)])))]
-                 ; [(maybe mv) (error 'production-s-exp->match-pattern "todo: ~a" se)]
+                        #'x] ; nonterminals are checked in the recursive in the template
+                       [_  (error 'production-s-exp->match-pattern "goty: ~a" se)])))]
+                 ; TODO [(maybe mv) (error 'production-s-exp->match-pattern "todo: ~a" se)]
                  [(ellipsis se0)
                   (list (recur se0) #'ooo)]
                  [(list-rest (ellipsis se0) se* ... sen)
@@ -657,54 +732,27 @@
                   (list #''())]
                  [_ (error 'production-s-exp->match-pattern "gotx: ~a" se)])))
            (recur se))
-         
-         (with-syntax ([(parse-nt ...)  (map construct-parse-nonterminal  nonterminals)]
+         ;; Generate parsers and put everything together
+         (define nonterminal-parsers (map construct-parse-nonterminal  nonterminals))
+         (with-syntax ([(parse-nt ...) nonterminal-parsers]
                        [parse-lang     (format-id stx "~a-parse" lang-name)]
                        [parse-entry    (format-id stx "parse-~a" entry-name)])
            (define it
              #'(define (parse-lang se)
                  ; one parser for each nonterminal (that throws exceptions on parse errors)
                  parse-nt ...
-                 
                  ; start parsing at the nonterminal named entry
                  (parse-entry se)))
            ; (displayln it)
-           it)
-         
-         ;;; Example: Handwritten parser.
-         
-         ;;; TODO: Implement production-s-expression->parser-match-pattern
-         #;(define (parse se)
-             ; 1) define parsers for each nonterminal
-             ; 2) call the entry parser
-             (define (parse-expr se)
-               (define p parse-expr)
-               (define (p* se*) (map p se*))
-               (match se
-                 ;[(? uvar? x)        x]
-                 ;[(? primitive? pr) pr]
-                 ; [(? datum? d)       d]
-                 ; terminal-productions generate a pattern using the predicate
-                 [(? uvar? x)         x]
-                 ; a keyword k becomes 'k and terminal-meta-vars use predicates,
-                 ; nonterminal-meta-vars recursivly calls the appropriate parser
-                 [(list 'quote (? datum? d))                  (Lsrc:Expr:quote d)]
-                 [(list 'if    e0 e1 e2)                      (Lsrc:Expr:if (p e0) (p e1) (p e2))]
-                 [(list 'begin e* ooo e)                      (Lsrc:Expr:begin (map p e*) (p e))]
-                 [(list 'lambda (list (? uvar? x*) ooo) body) (Lsrc:Expr:lambda x* (p body))]
-                 [(list 'let    (list [list x* e*] ooo) body) (Lsrc:Expr:let    x* (p* e*) (p body))]
-                 [(list 'letrec (list [list x* e*] ooo) body) (Lsrc:Expr:letrec x* (p* e*) (p body))]
-                 [(list 'set!   (? uvar? x) e)                (Lsrc:Expr:set!   x  (p e))]
-                 [(list 'call e e* ooo)                       (Lsrc:Expr:call   (p e) (p* e*))]
-                 [(list (? primitive? pr) e* ooo)             (cons pr (p* e*))]
-                 [_ (error 'parse "got: ~a" se)]))
-             (parse-expr se))))
+           it)))
      
-     
+     ;;; Ad 3) Put unparser here
+
+     ;; Add this language to the list of defined languages
      (set! defined-languages (cons parsed-lang defined-languages))
      
-     (with-syntax ([(struct-def ...) structs]
-                   [parser-definition the-parser]
+     (with-syntax ([(struct-def ...) struct-definitions-stx]
+                   [parser-definition parser-definition-stx]
                    [langs defined-languages])
        (quasisyntax/loc stx
          (begin struct-def ...
@@ -715,7 +763,35 @@
     [_
      (raise-syntax-error 'define-language "expected (define-language name clause ...), got: " stx)]))
 
+;;; syntax: (with-language lang-name nonterminal-name expr ...)
+;;;   Use keyword as short for lang-name:nontermina-name:keyword within
+;;;   uses of (construct <use-short-names-here>).
 
+(define-syntax-parameter construct (λ (stx) #'(error 'construct "used outside with-language")))
+
+(define-syntax (with-language stx)
+  (syntax-parse stx
+    [(_ lang-name:id nonterminal-name:id body:expr ...)
+     (define (lang-name? l) (free-identifier=? #'lang-name (language-name l)))
+     (define lang (for/first ([l defined-languages] #:when (lang-name? l)) l))
+     (unless lang (raise-syntax-error 'with-language "undefined language" #'lang-name))
+     (match-define 
+       (language stx name entry terminals nonterminals keywords+constructors metavars-ht) lang)
+     (with-syntax ([((keyword constructor) ...) keywords+constructors]
+                   [(qualified-constructor ...) (map second keywords+constructors)])
+       #'(syntax-parameterize 
+          ([construct 
+            (λ (so)
+              (syntax-parse so
+                [(__ e:expr)
+                 (with-syntax ([keyword (datum->syntax so 'keyword)] ...)
+                   #'(let ([keyword qualified-constructor] ...)
+                       e))]))])
+          body ...))]))
+
+;;;
+;;; EXAMPLES
+;;;
 
 
 (define (uvar? x)      (symbol? x))
@@ -775,28 +851,6 @@
 ; =
 ; (LP:Expr:if 1 2 4)
 
-(define-syntax-parameter construct (λ (stx) #'(error 'construct "used outside with-language")))
-
-(define-syntax (with-language stx)
-  (syntax-parse stx
-    [(_ lang-name:id nonterminal-name:id body:expr ...)
-     (define lang (for/first ([l defined-languages] 
-                              #:when (free-identifier=? #'lang-name (language-name l)))
-                    l))
-     (unless lang (raise-syntax-error 'with-language "undefined language" #'lang-name))
-     (match-define 
-       (language stx name entry terminals nonterminals keywords+constructors metavars-ht) lang)
-     (with-syntax ([((keyword constructor) ...) keywords+constructors]
-                   [(qualified-constructor ...) (map second keywords+constructors)])
-       #'(syntax-parameterize 
-          ([construct 
-            (λ (so)
-              (syntax-parse so
-                [(__ e:expr)
-                 (with-syntax ([keyword (datum->syntax so 'keyword)] ...)
-                   #'(let ([keyword qualified-constructor] ...)
-                       e))]))])
-          body ...))]))
 
 #;(define-language L0 (extends LP)
     (Expr (e body)
@@ -809,29 +863,44 @@
              (primapp pr e ...)
              (app e0 e1 ...))))
 
-(define-language L0 
-  (terminals
-   (uvar (x))
-   (datum (d))
-   (primitive (pr)))
-  (Expr (e body)
-        (datum d)
-        (var x)
-        (primapp pr e ...)
-        (app e0 e1 ...)
-        (set! x e)
-        ; (if e1 e2)
-        (if e1 e2 e3)
-        (begin e1 ... e2)
-        (lambda (x ...)     body1 ... body2)
-        (let    ((x e) ...) body1 ... body2)
-        (letrec ((x e) ...) body1 ... body2)))
+(module+ test
+  (define-language L0 
+    (terminals
+     (uvar (x))
+     (datum (d))
+     (primitive (pr)))
+    (Expr (e body)
+          (datum d)
+          (var x)
+          (primapp pr e ...)
+          (app e0 e1 ...)
+          (set! x e)
+          ; (if e1 e2)
+          (if e1 e2 e3)
+          (begin e1 ... e2)
+          (lambda (x ...)     body1 ... body2)
+          (let    ((x e) ...) body1 ... body2)
+          (letrec ((x e) ...) body1 ... body2)))
+  
+  ; Test that constructors exist and have correct number of fields
+  
+  (check-not-false (L0:Expr:datum 42))
+  (check-not-false (L0:Expr:var 'x))
+  (check-not-false (L0:Expr:primapp '+ '(1 2)))
+  (check-not-false (L0:Expr:app 'f '(1 2)))
+  (check-not-false (L0:Expr:set! 'x 3))
+  (check-not-false (L0:Expr:if 1 2 3))
+  (check-not-false (L0:Expr:begin (list 1 2 3) 4))
+  (check-not-false (L0:Expr:lambda '(x y) '() 5))
+  (check-not-false (L0:Expr:let    '(x y) '() '(1 2) 3))
+  ; Test with-language and construct
+  (check-equal? (with-language L0 Expr 43) 43)
+  (check-equal? (with-language L0 Expr (construct (begin '(4) (if 1 2 3))))
+                (L0:Expr:begin '(4) (L0:Expr:if 1 2 3))))
+
 
 (with-language Lsrc Expr (if 42 43 44))
 (with-language Lsrc Expr (construct (if 42 43 44)))
-(with-language L0 Expr 43)
-(with-language L0 Expr 
-  (construct 
-   (begin 4 (if 1 2 3)))) ; note: begin only takes two arguments -- we need a matcher ?
+; note: begin only takes two arguments -- we need a matcher ?
 
 Lsrc:Expr:if
