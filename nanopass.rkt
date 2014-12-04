@@ -1,5 +1,12 @@
 #lang racket
 (module+ test (require rackunit))
+;;;
+;;; CURRENT - writing unparser
+;;;         - example (Lsrc-unparse (Lsrc-parse '(if '1 '2 '3)))
+;;;         - todo: unparse of depths>0 require mapping => implement Lsrc-unparse*
+;;;         - todo: terminals need a guard
+;;;         - todo: use the terminal prettifier
+
 ;;; TODO
 ;;;   done  - parse define-language into structures
 ;;;   done  - produce pure definitions for nonterminals
@@ -747,16 +754,52 @@
            it)))
      
      ;;; Ad 3) Put unparser here
+     ; (struct    terminal-production production (terminal)    #:transparent)
+     ; (struct nonterminal-production production (nonterminal) #:transparent)
+     ; (struct     keyword-production production 
+     ;    (keyword struct-name field-count field-names field-depths s-exp) #:transparent)
+     ; (struct s-exp-production production ())
+  
+     (define unparser-definition-stx
+       (let ()
+         (define unparse-lang (format-id stx "~a-unparse" lang-name))
+         (define (construct-unparse-clause nt)
+           (match-define (nonterminal stx name meta-vars productions) nt)
+           (append* ; each case returns a list of clauses
+            (for/list ([p productions])
+              (match p
+                [(terminal-production    so pt)  (list #'[t t])]
+                [(nonterminal-production so pnt) '()]       ; pnt is handled by other nonterminal
+                [(keyword-production so keyword struct-name _ field-names field-depths s-exp)
+                 (with-syntax ([(fn ...) field-names] [struct-name struct-name] [u unparse-lang])
+                   (list #'[(struct-name fn ...) `(,'struct-name ,(u fn) ...)]))]
+                [(s-exp-production so) (list #'[(cons non-keyword more) `(,'non-keyword . more)])]
+                [_ (error 'unparser-definition-stx "internal error, got: ~a" p)]))))
+         
+         (define unparser-clauses (append-map construct-unparse-clause nonterminals
+                                       #;(append terminals nonterminals)))
+         (with-syntax ([(unparser-clause ...) unparser-clauses]
+                       ; [(unparse-terminal-clause ...)    terminal-unparsers]
+                       [unparse-lang                     unparse-lang]
+                       [unparse-entry    (format-id stx "unparse-~a" entry-name)])
+           #'(define (unparse-lang s)
+               (match s
+                 unparser-clause ...
+                 [_ (error 'unparse-lang "got: ~a" s)])))))
+     (displayln unparser-definition-stx)
+     
 
      ;; Add this language to the list of defined languages
      (set! defined-languages (cons parsed-lang defined-languages))
      
      (with-syntax ([(struct-def ...) struct-definitions-stx]
                    [parser-definition parser-definition-stx]
+                   [unparser-definition unparser-definition-stx]
                    [langs defined-languages])
        (quasisyntax/loc stx
          (begin struct-def ...
                 parser-definition
+                unparser-definition
                 ; make the language definition available for future expansions
                 #;(begin-for-syntax
                     (set! defined-languages 'langs)))))]
@@ -805,7 +848,6 @@
    (primitive (pr))
    (datum (d)))
   (Expr (e body)
-        x
         (quote d)
         (if e0 e1 e2)
         (begin e* ... e)
@@ -814,7 +856,8 @@
         (letrec ([x* e*] ...) body)
         (set! x e)
         (pr e* ...)
-        (call e e* ...)))
+        (call e e* ...)
+        x))
 
 #;(define-language LP
     (terminals
