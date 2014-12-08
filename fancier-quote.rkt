@@ -1,8 +1,15 @@
 #lang racket
-(require (for-syntax syntax/parse syntax/id-table))
+(provide qq)
 
-; (x* ...)     = (,@x*)
-; ((x* 1) ...) = (,@(map (λ(x) `(,x 1)) x*))
+;;; syntax (qq (var ...) template)
+;;;   qq is an "extended" quasiquote.
+;;;   It constructs a value from template.
+;;;   Variables named in (var ...) are automatically unquoted.
+;;;   If  var  is bound to a list, one can use var ... in the template.
+;;;   Nested as well as sequential occurences of ... in template is supported
+;;;   See tests below for examples
+
+(require (for-syntax syntax/parse syntax/id-table))
 
 (begin-for-syntax
   (require (for-syntax racket/base))
