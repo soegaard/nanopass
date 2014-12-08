@@ -6,6 +6,7 @@
 ;;;         - todo: unparse of depths>0 require mapping => implement Lsrc-unparse*
 ;;;         - todo: terminals need a guard
 ;;;         - todo: use the terminal prettifier
+;;;         - todo: unparsing (Lsrc:Exp:if 1 2 3) whould unparse to (if 1 2 3).
 
 ;;; TODO
 ;;;   done  - parse define-language into structures
@@ -842,14 +843,15 @@
 (define (datum? x)     (or (number? x) (symbol? x) (string? x)))
 
 (define-language Lsrc
-  (entry Expr) 
+  (entry Expr)
   (terminals
    (uvar (x))
    (primitive (pr))
    (datum (d)))
   (Expr (e body)
         (quote d)
-        (if e0 e1 e2)
+        (if1 e0 e1)
+        (if  e0 e1 e2)
         (begin e* ... e)
         (lambda (x* ...) body)
         (let    ([x* e*] ...) body)
@@ -858,6 +860,61 @@
         (pr e* ...)
         (call e e* ...)
         x))
+
+(define-language L1
+  (entry Expr) 
+  (terminals
+   (uvar (x))
+   (primitive (pr))
+   (datum (d)))
+  (Expr (e body)
+        (quote d)
+        (if  e0 e1 e2)
+        (begin e* ... e)
+        (lambda (x* ...) body)
+        (let    ([x* e*] ...) body)
+        (letrec ([x* e*] ...) body)
+        (set! x e)
+        (pr e* ...)
+        (call e e* ...)
+        x))
+
+;;; This is a manually written pass.
+;;; Notes:
+;;; For each nonterminal (here Expr) a functions is defined.
+;;; For each nonterminal a mapper is defined (here Expr*)
+;;; The recursion starts at the the entry  (here (Expr e)).
+;;; The output is created using construct + with-language Lsrx Expr. 
+;;; TODO: Introduce patten matching in the template.
+
+
+; remove-one-armed-if : Lsrc (e) -> L1 ()
+(define (pass-remove-one-armed-if e)
+  ; Expr : Expr (e) -> Expr ()
+  (define (Expr* e*) (map Expr e))
+  (define (Expr e)
+    (with-language Lsrc Expr
+      (match e
+        [(Lsrc:Expr:quote d)           (construct (quote e))]
+        [(Lsrc:Expr:if1 e0 e1)         (construct (if (Expr e0) (Expr e1) (quote #f)))]
+        [(Lsrc:Expr:if e0 e1 e2)       (construct (if  (Expr e0) (Expr e1) (Expr e2)))]
+        [(Lsrc:Expr:begin e* e)        (construct (begin (Expr* e*) (Expr e)))]
+        [(Lsrc:Expr:lambda x* body)    (construct (lambda x* (Expr body)))]
+        [(Lsrc:Expr:let x* e* body)    (construct (let x* (Expr* e*) (Expr body)))]
+        [(Lsrc:Expr:letrec x* e* body) (construct (letrec x* (Expr* e*) (Expr body)))]
+        [(Lsrc:Expr:set! x e)          (construct (set! x (Expr e)))]
+        [(list pr e*)                  (construct (pr (Expr* e*)))]
+        [(Lsrc:Expr:call e e*)         (construct (call (Expr e) (Expr* e*)))]
+        [(? uvar? x)                    x]
+        [other                         (error 'pass-remove-one-armed-if "got~a" other)])))
+  (Expr e))
+    
+(pass-remove-one-armed-if
+   (Lsrc-parse '(if1 '1 (if1 '2 '3))))
+
+(Lsrc-unparse
+ (pass-remove-one-armed-if
+  (Lsrc-parse '(if1 '1 (if1 '2 '3)))))
 
 #;(define-language LP
     (terminals
