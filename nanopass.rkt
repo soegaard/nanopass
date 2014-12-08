@@ -2,9 +2,6 @@
 (module+ test (require rackunit))
 ;;;
 ;;; CURRENT - writing unparser
-;;;         - example (Lsrc-unparse (Lsrc-parse '(if '1 '2 '3)))
-;;;         - todo: unparse of depths>0 require mapping => implement Lsrc-unparse*
-;;;         - todo: terminals need a guard
 ;;;         - todo: use the terminal prettifier
 
 ;;; TODO
@@ -81,7 +78,8 @@
 
 
 (require (for-syntax syntax/parse racket/match racket/list racket/syntax))
-(require racket/stxparam)
+(require (for-syntax "fancier-quote.rkt"))
+(require racket/stxparam "fancier-quote.rkt")
 
 ;;; KEYWORDS
 ; The keywords entry and terminals are used by define-language.
@@ -759,10 +757,11 @@
      ; (struct     keyword-production production 
      ;    (keyword struct-name field-count field-names field-depths s-exp) #:transparent)
      ; (struct s-exp-production production ())
-  
+     
      (define unparser-definition-stx
        (let ()
-         (define unparse-lang (format-id stx "~a-unparse" lang-name))
+         (define unparse-lang  (format-id stx "~a-unparse"  lang-name))
+         (define unparse*-lang (format-id stx "~a-unparse*" lang-name))
          (define (construct-unparse-clause-for-terminal t)
            (match-define (terminal stx name meta-vars prettifier) t)
            (with-syntax ([name? (format-id stx "~a?" name)])
@@ -776,29 +775,45 @@
                  (construct-unparse-clause-for-terminal pt)]
                 [(nonterminal-production so pnt) '()]       ; pnt is handled by other nonterminal
                 [(keyword-production so keyword struct-name _ field-names field-depths s-exp)
-                 (with-syntax ([(fn ...) field-names] [struct-name struct-name] [u unparse-lang]
-                                                      [keyword keyword])
-                   (list #'[(struct-name fn ...) `(,'keyword ,(u fn) ...)]))]
-                [(s-exp-production so) (list #'[(cons non-keyword more) `(,'non-keyword . more)])]
+                 (with-syntax ([u unparse-lang] [u* unparse*-lang])
+                   (define unparsed-fields
+                     (for/list ([fn field-names] [fd field-depths])
+                       (if (= fd 0)
+                           #`(u #,fn)
+                           #`(u* #,fn #,fd))))
+                   (with-syntax ([(fn ...) field-names]
+                                 [(ufn ...) unparsed-fields]
+                                 [struct-name struct-name]
+                                 [keyword keyword] [so so])               
+                     (list #'[(struct-name fn ...)
+                              (let ([fn ufn] ...)
+                                (qq (fn ...) so))])))]
+                [(s-exp-production so) 
+                 (list #'[(cons non-keyword more) `(,non-keyword . ,more)])]
                 [_ (error 'unparser-definition-stx "internal error, got: ~a" p)]))))
          (define unparser-clauses 
            (append (append-map construct-unparse-clause nonterminals)
                    (append-map construct-unparse-clause-for-terminal terminals)))
          (with-syntax ([(unparser-clause ...) unparser-clauses]
-                       ; [(unparse-terminal-clause ...)    terminal-unparsers]
-                       [unparse-lang                     unparse-lang]
-                       [unparse-entry    (format-id stx "unparse-~a" entry-name)])
-           #'(define (unparse-lang s)
-               (displayln s)
-               (match s
-                 unparser-clause ...
-                 [_ (displayln s) (error 'unparse-lang "got: ~a" s)])))))
+                       [unparse-lang  unparse-lang]
+                       [unparse*-lang unparse*-lang]
+                       [unparse-entry (format-id stx "unparse-~a" entry-name)])
+           #'(begin
+               (define (unparse*-lang ss d)
+                 (if (= d 0) 
+                     (unparse-lang ss)
+                     (map (λ (s) (unparse*-lang s (- d 1))) ss)))
+               (define (unparse-lang s)
+                 (match s
+                   unparser-clause ...
+                   [_ (displayln s) (error 'unparse-lang "got: ~a" s)]))))))
      (displayln unparser-definition-stx)
      
-
+     
      ;; Add this language to the list of defined languages
      (set! defined-languages (cons parsed-lang defined-languages))
      
+     (displayln parser-definition-stx)
      (with-syntax ([(struct-def ...) struct-definitions-stx]
                    [parser-definition parser-definition-stx]
                    [unparser-definition unparser-definition-stx]
@@ -842,7 +857,6 @@
 ;;;
 ;;; EXAMPLES
 ;;;
-
 
 (define (uvar? x)      (symbol? x))
 (define (primitive? x) (and (symbol? x) (member x '(+ - add1))))
@@ -897,7 +911,7 @@
 ; remove-one-armed-if : Lsrc (e) -> L1 ()
 (define (pass-remove-one-armed-if e)
   ; Expr : Expr (e) -> Expr ()
-  (define (Expr* e*) (map Expr e))
+  (define (Expr* e*) (map Expr e*))
   (define (Expr e)
     (with-language Lsrc Expr
       (match e
@@ -914,9 +928,9 @@
         [(? uvar? x)                    x]
         [other                         (error 'pass-remove-one-armed-if "got~a" other)])))
   (Expr e))
-    
+
 (pass-remove-one-armed-if
-   (Lsrc-parse '(if1 '1 (if1 '2 '3))))
+ (Lsrc-parse '(if1 '1 (if1 '2 '3))))
 
 (Lsrc-unparse
  (pass-remove-one-armed-if
@@ -1010,3 +1024,7 @@
 ; note: begin only takes two arguments -- we need a matcher ?
 
 Lsrc:Expr:if
+
+(Lsrc-unparse
+ (pass-remove-one-armed-if
+  (Lsrc-parse '(begin '1 '2))))
