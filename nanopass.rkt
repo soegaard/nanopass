@@ -1,19 +1,16 @@
 #lang racket
 (module+ test (require rackunit))
-;;;
-;;; CURRENT - writing unparser
-;;;         - todo: use the terminal prettifier
 
 ;;; TODO
 ;;;   done  - parse define-language into structures
 ;;;   done  - produce pure definitions for nonterminals
 ;;;   done  - produce type checking constructors for the nonterminal structures
 ;;;   done  - accept nonterminals as productions in nonterminals
+;;;   done  - unparsing
+;;;   done  - with-language + construct
 ;;;         - check References to meta-variables in a production must be unique
 ;;;         - handle keywords that appear in multiple clauses such as (if e0 e1) and (if e0 e1 e2)
-;;;         - unparsing
-;;;         - with-language + construct
-;;;         - unconstruct
+
 ;;; TODO
 ;;;         - should ... be disallowed as a keyword?
 
@@ -765,7 +762,10 @@
          (define (construct-unparse-clause-for-terminal t)
            (match-define (terminal stx name meta-vars prettifier) t)
            (with-syntax ([name? (format-id stx "~a?" name)])
-             (list #'[(? name? t) t])))
+             (if prettifier
+                 (with-syntax ([prettifier prettifier])
+                   (list #'[(? name? t) (prettifier t)]))
+                 (list #'[(? name? t)             t]))))
          (define (construct-unparse-clause nt)
            (match-define (nonterminal stx name meta-vars productions) nt)
            (append* ; each case returns a list of clauses
