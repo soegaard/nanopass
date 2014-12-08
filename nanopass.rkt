@@ -6,7 +6,6 @@
 ;;;         - todo: unparse of depths>0 require mapping => implement Lsrc-unparse*
 ;;;         - todo: terminals need a guard
 ;;;         - todo: use the terminal prettifier
-;;;         - todo: unparsing (Lsrc:Exp:if 1 2 3) whould unparse to (if 1 2 3).
 
 ;;; TODO
 ;;;   done  - parse define-language into structures
@@ -764,12 +763,17 @@
      (define unparser-definition-stx
        (let ()
          (define unparse-lang (format-id stx "~a-unparse" lang-name))
+         (define (construct-unparse-clause-for-terminal t)
+           (match-define (terminal stx name meta-vars prettifier) t)
+           (with-syntax ([name? (format-id stx "~a?" name)])
+             (list #'[(? name? t) t])))
          (define (construct-unparse-clause nt)
            (match-define (nonterminal stx name meta-vars productions) nt)
            (append* ; each case returns a list of clauses
             (for/list ([p productions])
               (match p
-                [(terminal-production    so pt)  (list #'[t t])]
+                [(terminal-production    so pt)
+                 (construct-unparse-clause-for-terminal pt)]
                 [(nonterminal-production so pnt) '()]       ; pnt is handled by other nonterminal
                 [(keyword-production so keyword struct-name _ field-names field-depths s-exp)
                  (with-syntax ([(fn ...) field-names] [struct-name struct-name] [u unparse-lang]
@@ -777,17 +781,18 @@
                    (list #'[(struct-name fn ...) `(,'keyword ,(u fn) ...)]))]
                 [(s-exp-production so) (list #'[(cons non-keyword more) `(,'non-keyword . more)])]
                 [_ (error 'unparser-definition-stx "internal error, got: ~a" p)]))))
-         
-         (define unparser-clauses (append-map construct-unparse-clause nonterminals
-                                       #;(append terminals nonterminals)))
+         (define unparser-clauses 
+           (append (append-map construct-unparse-clause nonterminals)
+                   (append-map construct-unparse-clause-for-terminal terminals)))
          (with-syntax ([(unparser-clause ...) unparser-clauses]
                        ; [(unparse-terminal-clause ...)    terminal-unparsers]
                        [unparse-lang                     unparse-lang]
                        [unparse-entry    (format-id stx "unparse-~a" entry-name)])
            #'(define (unparse-lang s)
+               (displayln s)
                (match s
                  unparser-clause ...
-                 [_ (error 'unparse-lang "got: ~a" s)])))))
+                 [_ (displayln s) (error 'unparse-lang "got: ~a" s)])))))
      (displayln unparser-definition-stx)
      
 
@@ -841,7 +846,7 @@
 
 (define (uvar? x)      (symbol? x))
 (define (primitive? x) (and (symbol? x) (member x '(+ - add1))))
-(define (datum? x)     (or (number? x) (symbol? x) (string? x)))
+(define (datum? x)     (or (number? x) (symbol? x) (string? x) (boolean? x)))
 
 (define-language Lsrc
   (entry Expr)
