@@ -25,6 +25,7 @@
   (define (qq0 tvars stx)
     (syntax-parse stx
       [() (syntax/loc stx '())]
+      [((~literal unquote) expr) #'expr]
       ; lists with at least one ellipsis
       [(more ... s:non-dots d:dots ds:dots ... sn:non-dots ...)
        ; The more ... is recursively expanded
