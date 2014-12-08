@@ -1055,8 +1055,13 @@
   (check-true (parse/unparse ''1))
   (check-true (parse/unparse 'x))
   (check-true (parse/unparse '(+ '1 '2 '3)))
-  
-  )
+  (check-true (parse/unparse '(if '1 '2 '3)))
+  (check-true (parse/unparse '(begin '1 '2 '3)))
+  (check-true (parse/unparse '(let    ([x '1] [y '2]) (+ x y '3))))
+  (check-true (parse/unparse '(letrec ([x '1] [y '2]) (+ x y '3))))
+  (check-true (parse/unparse '(lambda (x y) (+ x y '3))))
+  (check-true (parse/unparse '(set! x '42)))
+  (check-true (parse/unparse '(call (lambda (x) x) '3))))
 
 
 (with-language Lsrc Expr (if 42 43 44))
