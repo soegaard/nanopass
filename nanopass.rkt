@@ -577,7 +577,8 @@
            (define parse-nt?  (nonterminal->parse-name nt 0 '?))
            (define parse-nt*? (nonterminal->parse-name nt 1 '?)) 
            ; Generate the parser clauses
-           (define clauses (append-map (λ(p) (construct-match-clause-for-parser name p)) productions))
+           (define clauses (append-map (λ(p) (construct-match-clause-for-parser name p))
+                                       productions))
            (with-syntax 
                ([(clause ...) clauses] [parse-nt  parse-nt]  [parse-nt* parse-nt*] 
                                        [parse-nt? parse-nt?] [parse-nt*? parse-nt*?])
@@ -788,8 +789,14 @@
                      (list #'[(struct-name fn ...)
                               (let ([fn ufn] ...)
                                 (qq (fn ...) so))])))]
-                [(s-exp-production so) 
-                 (list #'[(cons non-keyword more) `(,non-keyword . ,more)])]
+                [(s-exp-production so)
+                 (with-syntax ([u unparse-lang])
+                   (list #'[(list non-keyword more (... ...))
+                            `(,non-keyword ,@(map u more))]
+                    #;#'[(cons non-keyword more) 
+                            `(,non-keyword . ,(u more))]
+                         ; #'['() '()])
+                         ))]                
                 [_ (error 'unparser-definition-stx "internal error, got: ~a" p)]))))
          (define unparser-clauses 
            (append (append-map construct-unparse-clause nonterminals)
@@ -877,7 +884,7 @@
         (let    ([x* e*] ...) body)
         (letrec ([x* e*] ...) body)
         (set! x e)
-        (pr e* ...)
+        (pr e* ...)       ; pr is a primitive, so this is an s-exp-production
         (call e e* ...)
         x))
 
@@ -910,13 +917,20 @@
 
 ; remove-one-armed-if : Lsrc (e) -> L1 ()
 (define (pass-remove-one-armed-if e)
-  ; Expr : Expr (e) -> Expr ()
+  ; Expr : Expr (e)    ; this input e is an Expr
+  ;        -> Expr ()  ; the single output valiu is an Expr  
   (define (Expr* e*) (map Expr e*))
   (define (Expr e)
     (with-language Lsrc Expr
       (match e
         [(Lsrc:Expr:quote d)           (construct (quote d))]
-        [(Lsrc:Expr:if1 e0 e1)         (construct (if (Expr e0) (Expr e1) (quote #f)))]
+        [(Lsrc:Expr:if1 e0 e1)         (let ([e0 (Expr e0)] [e1 (Expr e1)]) ; catas
+                                         (match (qq (e0 e1) 
+                                                    ; rewritten to
+                                                    (if e0 e1 (quote #f)))
+                                           ; match and construct
+                                           [(list _ e0 e1 e2)
+                                            (construct (if e0 e1 e2))]))]
         [(Lsrc:Expr:if e0 e1 e2)       (construct (if  (Expr e0) (Expr e1) (Expr e2)))]
         [(Lsrc:Expr:begin e* e)        (construct (begin (Expr* e*) (Expr e)))]
         [(Lsrc:Expr:lambda x* body)    (construct (lambda x* (Expr body)))]
@@ -984,6 +998,25 @@
              (app e0 e1 ...))))
 
 (module+ test
+  (define-language Lsrc
+    (entry Expr)
+    (terminals
+     (uvar (x))
+     (primitive (pr))
+     (datum (d)))
+    (Expr (e body)
+          (quote d)
+          (if1 e0 e1)
+          (if  e0 e1 e2)
+          (begin e* ... e)
+          (lambda (x* ...) body)
+          (let    ([x* e*] ...) body)
+          (letrec ([x* e*] ...) body)
+          (set! x e)
+          (pr e* ...)
+          (call e e* ...)
+          x))
+  
   (define-language L0 
     (terminals
      (uvar (x))
@@ -1016,7 +1049,14 @@
   ; Test with-language and construct
   (check-equal? (with-language L0 Expr 43) 43)
   (check-equal? (with-language L0 Expr (construct (begin '(4) (if 1 2 3))))
-                (L0:Expr:begin '(4) (L0:Expr:if 1 2 3))))
+                (L0:Expr:begin '(4) (L0:Expr:if 1 2 3)))
+  ; Test parsing and unparsing
+  (define (parse/unparse d) (equal? (Lsrc-unparse (Lsrc-parse d)) d))
+  (check-true (parse/unparse ''1))
+  (check-true (parse/unparse 'x))
+  (check-true (parse/unparse '(+ '1 '2 '3)))
+  
+  )
 
 
 (with-language Lsrc Expr (if 42 43 44))
