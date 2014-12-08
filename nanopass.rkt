@@ -772,8 +772,9 @@
                 [(terminal-production    so pt)  (list #'[t t])]
                 [(nonterminal-production so pnt) '()]       ; pnt is handled by other nonterminal
                 [(keyword-production so keyword struct-name _ field-names field-depths s-exp)
-                 (with-syntax ([(fn ...) field-names] [struct-name struct-name] [u unparse-lang])
-                   (list #'[(struct-name fn ...) `(,'struct-name ,(u fn) ...)]))]
+                 (with-syntax ([(fn ...) field-names] [struct-name struct-name] [u unparse-lang]
+                                                      [keyword keyword])
+                   (list #'[(struct-name fn ...) `(,'keyword ,(u fn) ...)]))]
                 [(s-exp-production so) (list #'[(cons non-keyword more) `(,'non-keyword . more)])]
                 [_ (error 'unparser-definition-stx "internal error, got: ~a" p)]))))
          
@@ -895,7 +896,7 @@
   (define (Expr e)
     (with-language Lsrc Expr
       (match e
-        [(Lsrc:Expr:quote d)           (construct (quote e))]
+        [(Lsrc:Expr:quote d)           (construct (quote d))]
         [(Lsrc:Expr:if1 e0 e1)         (construct (if (Expr e0) (Expr e1) (quote #f)))]
         [(Lsrc:Expr:if e0 e1 e2)       (construct (if  (Expr e0) (Expr e1) (Expr e2)))]
         [(Lsrc:Expr:begin e* e)        (construct (begin (Expr* e*) (Expr e)))]
