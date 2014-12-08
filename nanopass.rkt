@@ -8,6 +8,8 @@
 ;;;   done  - accept nonterminals as productions in nonterminals
 ;;;   done  - unparsing
 ;;;   done  - with-language + construct
+;;;         - define-pass
+;;;         - handle catamophisms in qq and/or construct ?
 ;;;         - check References to meta-variables in a production must be unique
 ;;;         - handle keywords that appear in multiple clauses such as (if e0 e1) and (if e0 e1 e2)
 
@@ -921,17 +923,30 @@
   ;        -> Expr ()  ; the single output valiu is an Expr  
   (define (Expr* e*) (map Expr e*))
   (define (Expr e)
-    (with-language Lsrc Expr
+    (with-language L1 Expr
+      ; reparse-Expr could be reused by multiple passes with L1 as output language
+      ; reparse-Expr : s-exp -> L1:Expr
+      ;   subexpressions of the input are represented as L1 structures,
+      ;   only the upper layer needs rewriting
+      (define (reparse-Expr s)
+        (match s
+          [(list 'if e0 e1 e2)                         (construct (if e0 e1 e2))]
+          [(list 'quote d)                             (construct (quote d))]
+          [(list 'begin e* ... e)                      (construct (begin e*  e))]
+          [(list 'lambda (list x* ...) body)           (construct (lambda x* body))]
+          [(list 'let (list [list x* e*] ...) body)    (construct (let x* e* body))]
+          [(list 'letrec (list [list x* e*] ...) body) (construct (letrec x* e* body))]
+          [(list 'set! x e)                            (construct (set! x e))]
+          [(list pr e* ...)                            (construct (pr e*))]
+          [(list 'call e e* ...)                       (construct (call e e*))]
+          [(? uvar? x)                                 x]))
       (match e
-        [(Lsrc:Expr:quote d)           (construct (quote d))]
+        ; manual clauses
         [(Lsrc:Expr:if1 e0 e1)         (let ([e0 (Expr e0)] [e1 (Expr e1)]) ; catas
-                                         (match (qq (e0 e1) 
-                                                    ; rewritten to
-                                                    (if e0 e1 (quote #f)))
-                                           ; match and construct
-                                           [(list _ e0 e1 e2)
-                                            (construct (if e0 e1 e2))]))]
-        [(Lsrc:Expr:if e0 e1 e2)       (construct (if  (Expr e0) (Expr e1) (Expr e2)))]
+                                         (reparse-Expr (qq (e0 e1) (if e0 e1 (quote #f)))))]
+        ; auto generated clauses
+        [(Lsrc:Expr:quote d)           (construct (quote d))] ; no cata for datums
+        [(Lsrc:Expr:if e0 e1 e2)       (construct (if  (Expr e0) (Expr e1) (Expr e2)))] ; catas
         [(Lsrc:Expr:begin e* e)        (construct (begin (Expr* e*) (Expr e)))]
         [(Lsrc:Expr:lambda x* body)    (construct (lambda x* (Expr body)))]
         [(Lsrc:Expr:let x* e* body)    (construct (let x* (Expr* e*) (Expr body)))]
@@ -939,14 +954,16 @@
         [(Lsrc:Expr:set! x e)          (construct (set! x (Expr e)))]
         [(list pr e*)                  (construct (pr (Expr* e*)))]
         [(Lsrc:Expr:call e e*)         (construct (call (Expr e) (Expr* e*)))]
+        ; auto generated terminals
         [(? uvar? x)                    x]
+        ; catch errors
         [other                         (error 'pass-remove-one-armed-if "got~a" other)])))
   (Expr e))
 
 (pass-remove-one-armed-if
  (Lsrc-parse '(if1 '1 (if1 '2 '3))))
 
-(Lsrc-unparse
+(L1-unparse
  (pass-remove-one-armed-if
   (Lsrc-parse '(if1 '1 (if1 '2 '3)))))
 
@@ -1070,6 +1087,6 @@
 
 Lsrc:Expr:if
 
-(Lsrc-unparse
+(L1-unparse
  (pass-remove-one-armed-if
   (Lsrc-parse '(begin '1 '2))))
