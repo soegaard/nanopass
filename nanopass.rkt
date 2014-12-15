@@ -80,6 +80,13 @@
 (require (for-syntax "fancier-quote.rkt"))
 (require racket/stxparam "fancier-quote.rkt")
 
+(begin-for-syntax
+  (require (for-syntax syntax/parse racket/base))
+  (define-syntax (with-lifted-syntax stx)
+    (syntax-parse stx
+      [(_ (id ...) body ...)
+       #'(with-syntax ([id id] ...) body ...)])))
+
 ;;; KEYWORDS
 ; The keywords entry and terminals are used by define-language.
 ; Bind them to syntax signaling an error, if used outside define-language.
@@ -106,11 +113,11 @@
   ; terminals and nonterminals are lists of terminals and nonterminals respectively
   ; keywords+constructors is a list of elements of the form (list keyword struct-name)
   
-  (struct terminal    (stx name meta-vars prettifier)  #:transparent)
+  (struct terminal    (stx name meta-vars prettifier)  #;#:transparent)
   ; name is an identifier, meta-vars is a list of identifiers and 
   ; prettifier is a syntax-object representing an expression.
   
-  (struct nonterminal (stx name meta-vars productions) #:transparent #:mutable)
+  (struct nonterminal (stx name meta-vars productions) #;#:transparent #:mutable)
   ; productions is a list of syntax-objects of the follwing forms:
   ;   terminal-meta-var
   ;   nonterminal-meta-var
@@ -134,6 +141,11 @@
   ;             (x ...) ... has depth 2
   ;             etc
   (struct ellipsis (production-s-expression) #:transparent))
+
+(begin-for-syntax
+  (define (terminal->predicate-name loc t)
+    (format-id loc "~a?" (terminal-name t))))
+
 
 ;;; SYNTAX CLASSES
 ; Define syntax classes to match the grammar of define-language.
@@ -648,8 +660,8 @@
                        #,@(production-s-exp->match-template stx)])]
              [else (error 'construct-parse-clause "todo got ~a" prod)]))
          
-         (define (terminal->predicate-name loc t)
-           (format-id loc "~a?" (terminal-name t)))
+         #;(define (terminal->predicate-name loc t)
+             (format-id loc "~a?" (terminal-name t)))
          
          ; production-s-exp->match-template : s-exp -> (list syntax)
          ;   generate a match template that matches the s-exp
@@ -795,8 +807,8 @@
                  (with-syntax ([u unparse-lang])
                    (list #'[(list non-keyword more (... ...))
                             `(,non-keyword ,@(map u more))]
-                    #;#'[(cons non-keyword more) 
-                            `(,non-keyword . ,(u more))]
+                         #;#'[(cons non-keyword more) 
+                              `(,non-keyword . ,(u more))]
                          ; #'['() '()])
                          ))]                
                 [_ (error 'unparser-definition-stx "internal error, got: ~a" p)]))))
@@ -816,8 +828,82 @@
                  (match s
                    unparser-clause ...
                    [_ (displayln s) (error 'unparse-lang "got: ~a" s)]))))))
-     (displayln unparser-definition-stx)
+     (displayln (list 'unparser-definition-stx: unparser-definition-stx))
      
+     (define (generate-reparse-nt lang nt)
+       (match-define (language stx name entry terminals nonterminals keywords+constructors
+                               metavars-ht) lang)
+       (match-define (nonterminal nt-stx nt-name meta-vars productions) nt)
+       (define reparse-L:nt  (format-id nt-stx "reparse-~a:~a"  lang-name nt-name))
+       (define reparse*-L:nt (format-id nt-stx "reparse*-~a:~a" lang-name nt-name))
+       (define (construct-match-clause-for-reparser nt-name prod)
+         (define (reparse-generate-s-exp-pattern s-exp)
+           (define (recur se)
+             (with-syntax ([ooo #'(... ...)] [failure #'failure])
+               (match (if (syntax-pair? se) (syntax-e se) se)
+                 [(? identifier? x)
+                  (define mv (meta-vars-ref metavars-ht x))
+                  (list 
+                   (with-syntax ([x x])
+                     (match mv
+                       [(? terminal? t)
+                        (with-syntax ([pred (terminal->predicate-name #'here t)])
+                          #'(? pred x))]
+                       [(? nonterminal? nt)
+                        #'x ; non terminals are (maybe) reparsed in the template
+                        ]
+                       [_ (error 'reparse "internal error, got ~a" #'x)])))]
+                 ; TODO [(maybe mv) (error 'reparse-generate-s-exp-match-pattern "todo: ~a" se)]
+                 [(ellipsis se0)
+                  (cons (recur se0) #'ooo)]
+                 [(list-rest (ellipsis se0) se* ... sen)
+                  (list #`(list-rest #,@(recur se0) ooo
+                                     #,@(append-map recur se*)
+                                     #,@(recur sen)))]
+                 [(cons se0 se1)
+                  (list #`(cons #,@(recur se0) #,@(recur se1)))]
+                 ['() 
+                  (list #''())]
+                 [_ (error 'reparse-generate-s-exp-match-patterb "gotx: ~a" se)])))
+           (recur s-exp))
+         ;; generate the match clause
+       (match prod
+         [(terminal-production stx term)
+          (match-define (terminal stx name meta-vars prettifier) term)
+          (with-syntax ([pred? (terminal->predicate-name stx term)])
+            (list #'[(? pred? x) x]))]
+         #;[(nonterminal-production stx nonterm)
+            ; The case where the nonterminal nt has another nonterminal as production.
+            ; Use the predicate version of the parser, since the match might fail.
+            (with-syntax ([parse-nonterm? (nonterminal->parse-name nonterm 0 '?)])
+              (list #'[(app parse-nonterm? x) x]))]
+         [(keyword-production stx keyword struct-name field-count field-names field-depths s-exp)
+          ; XXX the keywords in stx needs to be replaced the their struct-name
+          (with-syntax ([keyword             keyword]
+                        [(s-exp-pattern ...) (reparse-generate-s-exp-pattern s-exp)]
+                        [(field-name ...)    field-names])
+            (with-lifted-syntax (stx)
+              (list #'[(cons 'keyword s-exp-pattern ...) (construct (keyword field-name ...))])))]
+         [(s-exp-production s-exp) 
+          (with-syntax ([(s-exp-pattern ...) (reparse-generate-s-exp-pattern s-exp)]
+                        [s-exp s-exp])
+            ; todo: s-exp is not the right thing here
+            (list #'[(s-exp-pattern ...) (construct s-exp)]))]))
+       (define reparse-clauses
+         (append* (for/list ([prod productions])
+                    (construct-match-clause-for-reparser nt-name prod))))
+       (with-syntax ([nt-name nt-name]
+                     [reparse-L:nt reparse-L:nt]
+                     [lang-name lang-name]
+                     [(reparse-clause ...) reparse-clauses])
+         #'(define (reparse-L:nt s)
+             (with-language lang-name nt-name
+               (match s
+                 reparse-clause ...
+                 [other (raise-syntax-error 'reparse-L:nt "got" other)])))))
+     
+     (for ([nt nonterminals])
+       (displayln (list 'reparser: (generate-reparse-nt parsed-lang nt))))
      
      ;; Add this language to the list of defined languages
      (set! defined-languages (cons parsed-lang defined-languages))
@@ -915,6 +1001,24 @@
 ;;; The recursion starts at the the entry  (here (Expr e)).
 ;;; The output is created using construct + with-language Lsrx Expr. 
 ;;; TODO: Introduce patten matching in the template.
+
+
+#;(define (reparse-Expr s)
+    (match s
+      [(list 'if e0 e1 e2)                         (construct (if e0 e1 e2))]
+      [(list 'quote d)                             (construct (quote d))]
+      [(list 'begin e* ... e)                      (construct (begin e*  e))]
+      [(list 'lambda (list x* ...) body)           (construct (lambda x* body))]
+      [(list 'let (list [list x* e*] ...) body)    (construct (let x* e* body))]
+      [(list 'letrec (list [list x* e*] ...) body) (construct (letrec x* e* body))]
+      [(list 'set! x e)                            (construct (set! x e))]
+      [(list pr e* ...)                            (construct (pr e*))]
+      [(list 'call e e* ...)                       (construct (call e e*))]
+      [(? uvar? x)                                 x]))
+
+
+
+
 
 
 ; remove-one-armed-if : Lsrc (e) -> L1 ()
