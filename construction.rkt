@@ -1,6 +1,4 @@
 #lang racket
-;;; Notes: two level ... work (with explicit variables)
-
 ;;; Current problem: catas are not working for ellipsis varibles
 
 (require (for-syntax syntax/parse
@@ -12,7 +10,7 @@
 ; construct is to construction as match is to deconstruction
 
 ; (construct 1)             => 1
-; For x unbound in the construct environment:
+; For x unbound in the construction environment:
 ; (construct x)             => 'x
 ; (construct (x . d))       => (cons (construct x) (construct d))
 ;; For x bound to construction transformer t in the construction environment
@@ -27,75 +25,122 @@
 (define-syntax-parameter level  0)
 (struct construction-transformer (transform))
 (struct construction-cata        (cata))
+(begin-for-syntax
+  (struct expansion-cata         (id) #:transparent))
+
+(define-syntax (with-variables stx)
+  (syntax-parse stx
+    [(_ (id ...) body ...)
+     (define new-env
+       (for/fold ([r (syntax-parameter-value #'env)]) ([id (syntax->list #'(id ...))])
+         (if (free-id-table-ref r id #f)
+             r ; don't override an existing binding
+             (free-id-table-set r id 'variable))))
+     #`(syntax-parameterize ([env #,new-env])
+                            body ...)]))
+
+(define-syntax (with-catas stx)
+  (syntax-parse stx
+    [(_ (id:id ...) f body ...)
+     (define new-env
+       (for/fold ([r (syntax-parameter-value #'env)]) ([id (syntax->list #'(id ...))])
+         (free-id-table-set r id (expansion-cata #'f))))
+     #`(syntax-parameterize ([env #,new-env])
+                            body ...)]))
+
+(define-syntax (with-catas* stx)
+  (syntax-parse stx
+    [(_ () body ...)                     #'(let () body ...)]
+    [(_  ([c0 f0] [c f] ...) body ...)   #'(with-catas (c0) f0
+                                             (with-catas* ([c f] ...)
+                                               body ...))]))
 
 (begin-for-syntax  
-  (define (bound? id)   (free-id-table-ref (syntax-parameter-value #'env) id #f))
-  (define (unbound? id) (not (bound? id)))
+  (define (ref id) (free-id-table-ref (syntax-parameter-value #'env) id #f))
+  (define (bound? id)    (ref id))
+  (define (unbound? id)  (not (bound? id)))
+  (define (variable? id) (eq? (ref id) 'variable))
+  (define (cata? id) (expansion-cata? (ref id)))
   
-  (define-syntax-class bound
+  (define-syntax-class variable
     #:description "identifier bound in the construction environment"
     (pattern var:id
-             #:fail-unless (bound? #'var) 
+             #:fail-unless (variable? #'var) 
              "identifier bound in the construction environment expected"))
   
   (define-syntax-class unbound
     #:description "an identifier not bound in the construction environment"
     (pattern var:id
              #:fail-unless (unbound? #'var)
-             "an identifier not bound in the construction environment expected")))
+             "an identifier not bound in the construction environment expected"))
+  
+  (define-syntax-class cata
+    #:description "identifier bound to catamorphism in the construction environment"
+    #:attributes (f)
+    (pattern var:id
+             #:fail-unless (cata? #'var) 
+             "identifier bound to catamorphism in the construction environment expected"
+             #:attr f (cata? #'var))))
 
-(define-syntax (with-constructors stx)
-  (syntax-parse stx
-    [(_ (id ...) body ...)
-     (define new-env
-       (for/fold ([r (syntax-parameter-value #'env)]) ([id (syntax->list #'(id ...))])
-         (free-id-table-set r id #t)))
-     #`(syntax-parameterize ([env #,new-env])
-                            body ...)]))
 
+(begin-for-syntax
+  (define flag #f)
+  (set! flag #f))
 (define-syntax (construct stx)
-  (displayln stx)
+  (when flag (displayln stx))
+  (when flag (displayln (free-id-table-map (syntax-parameter-value #'env) list )))
   (define l  (syntax-parameter-value #'level))
   (define ls (syntax-parameter-value #'levels))
   (syntax-parse stx
     [(_ x:number)                      #'x]
     [(_ x:unbound)                     #''x]
-    [(_ x:bound)                       #'(match x
+    [(_ x:cata)                        (with-syntax ([f (expansion-cata-id (ref #'x))])
+                                         #'(f x))]
+    [(_ x:variable)                    #'(match x
                                            [(construction-transformer t) (t)]
                                            [(construction-cata c)        (c)]
                                            [_                             x])]
-    [(_ (x:bound ((~literal ...) {bv ...} a*) . d))
-     #'(cons (construct x)
-             (append (append-map (λ (bv ...)
-                                   (with-constructors (bv ...)
-                                     (construct (a*))))
-                                 bv ...)
-                     (construct d)))]
-    [(_ (x:bound d ...))               #'(let ([vds (list (construct d) ...)])
+    [(_ (x:cata     ((~literal ...) {bv ...} a*) . d)) 
+     (displayln 'rule1)
+     #'(cons (construct x) (construct (((... ...) {bv ...} a*) . d)))]
+    [(_ (x:variable ((~literal ...) {bv ...} a*) . d))
+     (displayln 'rule2)
+     #'(let ([tail         (construct (((... ...) {bv ...} a*) . d))])
+         (match x
+           [(construction-transformer t) (apply t tail)]
+           [_                             x]))]
+    [(_ (x:cata d ...))                #'(cons (construct x) (construct (d ...)))]
+    [(_ (x:variable d ...))            #'(let ([vds (construct (d ...))])
                                            (match x
                                              [(construction-transformer t) (apply t vds)]
-                                             [(construction-cata        c) (cons (c) vds)]
                                              [_                            (cons x vds)]))]
-    [(_ (x:bound . d))                 #'(let ([vd (construct d)])
-                                           (match x
-                                             ; [(construction-transformer t) (t vd)]
-                                             [(construction-cata        c) (cons (c) vd)]
-                                             [_                            (cons x vd)]))]
-    [(_ ( ((~literal ...) {bv ...} a*) . d)) 
-     #'(append (append-map (λ (bv ...)
-                             (with-constructors (bv ...)
-                               (construct (a*))))
-                           bv ...)
-               (construct d))]
-    [(_ (a . d))                       #'(cons (construct a) (construct d))]
-    [(_ ())                            #''()]
-    [(_ #:catas {c ...} f . more)        (with-syntax ([(t ...) (generate-temporaries #'(c ...))])
-                                           #'(let ([t (construction-cata (λ () (f c)))] ...)
-                                               (let ([c t] ...)
-                                                 (with-constructors (c ...)
-                                                   (construct . more)))))]
-    [(_ {v ...} . more)                #'(with-constructors {v ...} (construct . more))]
-    [_ (error 'construct "got ~a" stx)]))
+    [(_ (((~literal ...) {bv ...} a*) . d))
+     (displayln 'rule3)
+     (with-syntax ([(u ...) (filter unbound? (syntax->list #'(bv ...)))]
+                   [(c ...) (filter cata?    (syntax->list #'(bv ...)))])
+       (with-syntax ([(f ...) (map (λ (v) (expansion-cata-id (ref v)))
+                                   (syntax->list #'(c ...)))])
+       #'(append (append-map (λ (bv ...)
+                               (with-variables (u ...)
+                                 (with-catas*  ([c f] ...)
+                                   (construct (a*)))))
+                             bv ...)
+                 (construct d))))]
+    [(_ (a . d))                           #'(cons (construct a) (construct d))]
+    [(_ ())                                #''()]
+    [(_ #:catas {c ...} f . more)          #'(with-catas (c ...) f
+                                               (construct . more))]
+    #;[(_ #:catas {c ...} f . more)        (with-syntax ([(t ...) (generate-temporaries #'(c ...))])
+                                             #'(let ([t (construction-cata (λ () (f c)))] ...)
+                                                 ; TODO: postpone the wrapping of the cata to 
+                                                 ;       the references of c
+                                                 ;       Why? This will handle ellipsis.
+                                                 (let ([c t] ...)
+                                                   (with-variables (c ...)
+                                                     (construct . more)))))]
+    [(_ {v ...} . more)                #'(with-variables {v ...} (construct . more))]
+    [_ (displayln stx)
+       (error 'construct "got ~a" stx)]))
 
 
 (module+ test (require rackunit)
@@ -104,46 +149,56 @@
   (check-equal? (construct x) 'x)
   (check-equal? (construct y) 'y)
   (check-equal? (let ([x 42])
-                  (with-constructors (x)
+                  (with-variables (x)
                     (construct 42)))
                 42)
   (check-equal? (let ([x (construction-transformer (λ v (cons 'x: v)))])
-                  (with-constructors (x)
+                  (with-variables (x)
                     (construct x)))
                 '(x:))
   (check-equal? (let ([Foo (construction-transformer (λ v (apply foo v)))])
-                  (with-constructors (Foo)
+                  (with-variables (Foo)
                     (construct (Foo 42))))
                 (foo 42))
   (check-equal? (let ([Foo (construction-transformer (λ v (apply foo v)))])
-                  (with-constructors (Foo)
+                  (with-variables (Foo)
                     (construct (foo (Foo foo)))))
                 `(foo, (foo 'foo)))
   (check-equal? (let ([a '(1 2 3)])
-                  (with-constructors (a)
+                  (with-variables (a)
                     (construct (x (... {a} a) y))))            ; read as  x a ... y
                 '(x 1 2 3 y))
   (check-equal? (let ([a '(1 2 3)])
-                  (with-constructors (a)
+                  (with-variables (a)
                     (construct (x (... {a} (y a)) z))))        ; read as  x (y a) ... z
                 '(x (y 1) (y 2) (y 3) z))
   (check-equal? (let ([a '((1 2 3) (x y z))])  
-                  (with-constructors (a)
+                  (with-variables (a)
                     (construct (x (... {a} (... {a} a)) z))))  ; read as  x a ... ... y
                 '(x 1 2 3 x y z z))
-  (check-equal? (let ([a '((1 2 3) (x y z))] [b '(11 12)])
-                  (with-constructors (a)
-                    (construct (x (... {a b} (b (... {a} a))) z)))) ; reads as x (b a ...) ... z
-                '(x (11 1 2 3) (12 x y z) z))
-  (check-equal? (let ([a '(((1 2 3) (4 5 6)) ((11 12 13) (14 15 16)))])
-                  (construct {a}
-                             ((... {a} (... {a} (... {a} a))))))
-                '(1 2 3 4 5 6 11 12 13 14 15 16))
-  (check-equal? (let ([a '((1 2 3) (x y z))] [b '(11 12)])
-                  (with-constructors (a b)
-                    (construct 
-                     (x (... {a b} (b (... {a} a))) z))))
-                '(x (11 1 2 3) (12 x y z) z)))
+  #;(check-equal? (let ([a '((1 2 3) (x y z))] [b '(11 12)])
+                    (with-variables (a)
+                      (construct (x (... {a b} (b (... {a} a))) z)))) ; reads as x (b a ...) ... z
+                  '(x (11 1 2 3) (12 x y z) z))
+  #;(check-equal? (let ([a '(((1 2 3) (4 5 6)) ((11 12 13) (14 15 16)))])
+                    (construct {a}
+                               ((... {a} (... {a} (... {a} a))))))
+                  '(1 2 3 4 5 6 11 12 13 14 15 16))
+  #;(check-equal? (let ([a '((1 2 3) (x y z))] [b '(11 12)])
+                    (with-variables (a b)
+                      (construct 
+                       (x (... {a b} (b (... {a} a))) z))))
+                  '(x (11 1 2 3) (12 x y z) z))
+  (check-equal? (let ([x 16])
+                  (with-variables (x)
+                    (with-catas (x) sqrt
+                      (with-variables (x)
+                        (construct {x} (1 x))))))
+                '(1 4))
+  (check-equal? (let ([a '(1 4 9 16)])
+                  (with-catas (a) sqrt
+                    (construct ((... {a} a)))))
+                '(1 2 3 4)))
 
 (define (simplify-lite s-exp)
   (define recur simplify-lite)
@@ -163,13 +218,13 @@
                                                        (begin e* en))]
     [(list 'lambda (list x* ...) 
            body* body)                      (construct {x*} #:catas {body* body} recur
-                                                       (lambda (x* ...) (begin body* body)))]
+                                                       (lambda x* (begin body* body)))]
     [(list 'letrec (list (list x* e*))
            body*  body)                     (construct {x*} #:catas {e* body* body} recur
                                                        (letrec ([x* e*]) (begin body* body)))]
-    [(list e e* ...)                        (construct #:catas {e e*} recur
-                                                       (e e* ...))]
-    [_ (error 'simplify-liet "got ~a" s-exp)]))
+    #;[(list e e*)                          (construct #:catas {e e*} recur
+                                                       (e e*))]
+    [_ (error 'simplify-litt "got ~a" s-exp)]))
 
 (define (simplify s-exp)
   (displayln s-exp)
