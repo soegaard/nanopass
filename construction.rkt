@@ -22,7 +22,9 @@
 ; (construct x)             => x
 ; (construct ((x ...) . d)  => (list* (construct x) ... d)
 
-(define-syntax-parameter env (make-immutable-free-id-table))
+(define-syntax-parameter env    (make-immutable-free-id-table))
+(define-syntax-parameter levels (make-immutable-free-id-table))
+(define-syntax-parameter level  0)
 (struct construction-transformer (transform))
 (struct construction-cata        (cata))
 
@@ -52,44 +54,47 @@
                             body ...)]))
 
 (define-syntax (construct stx)
+  (displayln stx)
+  (define l  (syntax-parameter-value #'level))
+  (define ls (syntax-parameter-value #'levels))
   (syntax-parse stx
-    [(_ x:number)      #'x]
-    [(_ x:unbound)     #''x]
-    [(_ x:bound)       #'(match x
-                           [(construction-transformer t) (t)]
-                           [(construction-cata c)        (c)]
-                           [_                             x])]
-    [(_ (x:bound d ...)) #'(let ([vds (list (construct d) ...)])
-                             (match x
-                               [(construction-transformer t) (apply t vds)]
-                               [(construction-cata        c) (cons (c) vds)]
-                               [_                            (cons x vds)]))]
-    [(_ (x:bound . d))  #'(let ([vd (construct d)])
-                            (match x
-                              ; [(construction-transformer t) (t vd)]
-                              [(construction-cata        c) (cons (c) vd)]
-                              [_                            (cons x vd)]))]
-    [(_ (((~literal ...) {bv ...} ((~literal ...) {bv2 ...} a*)) . d))
+    [(_ x:number)                      #'x]
+    [(_ x:unbound)                     #''x]
+    [(_ x:bound)                       #'(match x
+                                           [(construction-transformer t) (t)]
+                                           [(construction-cata c)        (c)]
+                                           [_                             x])]
+    [(_ (x:bound ((~literal ...) {bv ...} a*) . d))
+     #'(cons (construct x)
+             (append (append-map (λ (bv ...)
+                                   (with-constructors (bv ...)
+                                     (construct (a*))))
+                                 bv ...)
+                     (construct d)))]
+    [(_ (x:bound d ...))               #'(let ([vds (list (construct d) ...)])
+                                           (match x
+                                             [(construction-transformer t) (apply t vds)]
+                                             [(construction-cata        c) (cons (c) vds)]
+                                             [_                            (cons x vds)]))]
+    [(_ (x:bound . d))                 #'(let ([vd (construct d)])
+                                           (match x
+                                             ; [(construction-transformer t) (t vd)]
+                                             [(construction-cata        c) (cons (c) vd)]
+                                             [_                            (cons x vd)]))]
+    [(_ ( ((~literal ...) {bv ...} a*) . d)) 
      #'(append (append-map (λ (bv ...)
                              (with-constructors (bv ...)
-                               (construct (((... ...) {bv2 ...} a*)))))
+                               (construct (a*))))
                            bv ...)
                (construct d))]
-    [(_ (((~literal ...) {bv ...} a*) . d)) (with-syntax (#;[(v ...) (bound-vars-of a*)])
-                                              #'(append (map (λ (bv ...)
-                                                               (with-constructors (bv ...)
-                                                                 (construct a*)))
-                                                             bv ...)
-                                                        (construct d)))]
-    [(_ (a . d))                         #'(cons (construct a) (construct d))]
-    [(_ ())                              #''()]
+    [(_ (a . d))                       #'(cons (construct a) (construct d))]
+    [(_ ())                            #''()]
     [(_ #:catas {c ...} f . more)        (with-syntax ([(t ...) (generate-temporaries #'(c ...))])
                                            #'(let ([t (construction-cata (λ () (f c)))] ...)
                                                (let ([c t] ...)
                                                  (with-constructors (c ...)
                                                    (construct . more)))))]
-    [(_ {v ...} . more)                  #'(with-constructors {v ...} (construct . more))]
-    
+    [(_ {v ...} . more)                #'(with-constructors {v ...} (construct . more))]
     [_ (error 'construct "got ~a" stx)]))
 
 
@@ -129,6 +134,15 @@
   (check-equal? (let ([a '((1 2 3) (x y z))] [b '(11 12)])
                   (with-constructors (a)
                     (construct (x (... {a b} (b (... {a} a))) z)))) ; reads as x (b a ...) ... z
+                '(x (11 1 2 3) (12 x y z) z))
+  (check-equal? (let ([a '(((1 2 3) (4 5 6)) ((11 12 13) (14 15 16)))])
+                  (construct {a}
+                             ((... {a} (... {a} (... {a} a))))))
+                '(1 2 3 4 5 6 11 12 13 14 15 16))
+  (check-equal? (let ([a '((1 2 3) (x y z))] [b '(11 12)])
+                  (with-constructors (a b)
+                    (construct 
+                     (x (... {a b} (b (... {a} a))) z))))
                 '(x (11 1 2 3) (12 x y z) z)))
 
 (define (simplify-lite s-exp)
