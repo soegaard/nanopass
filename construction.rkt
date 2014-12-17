@@ -158,7 +158,7 @@
              [else ; at least one ellipsis, wrap around the s-exp after 
               (match a-more
                 [(cons a more) ; a is the s-exp to be repeated
-                 (define wrapped-a (for/fold ([a a]) ([d ds])
+                 (define wrapped-a (for/fold ([a (r a)]) ([d ds])
                                      #`(#,a dots)))
                  #`(#,wrapped-a . #,(r more))]
                 ['() (error 'rewrite-ellipis "no s-expression after ellipsis")])])]
@@ -172,9 +172,10 @@
   ; (define (r stx) (rewrite-ellipsis (reverse-syntax stx)))
   (provide r)
   (with-syntax ([ooo #'(... ...)])
-    (check-equal? (sd (r #'(1 2 3))) '(1 2 3))
-    (check-equal? (sd (r #'(1 x (... ...) 2))) '(1 (... x) 2))
-    (check-equal? (sd (r #'(1 x (... ...) (... ...) 2))) '(1 (... (... x)) 2))))
+    (check-equal? (sd (r #'(1 2 3)))                         '(1 2 3))
+    (check-equal? (sd (r #'(1 x (... ...) 2)))               '(1 (... x) 2))
+    (check-equal? (sd (r #'(1 x (... ...) (... ...) 2)))     '(1 (... (... x)) 2))
+    (check-equal? (sd (r #'(1 2 (3 x (... ...)) (... ...)))) '(1 2 (... (3 (... x)))))))
 
   
 
@@ -313,4 +314,4 @@
   (check-equal? (simplify '(if 1 (letrec ([x (if 2 3)]) 4 5)))
                 '(if 1 (letrec ((x (if 2 3 (void)))) (begin 4 5)) (void))))
 
-(require (submod "." test))
+; (require (submod "." test))
