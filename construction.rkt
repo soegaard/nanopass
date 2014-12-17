@@ -100,44 +100,28 @@
                                            [(construction-transformer t) (t)]
                                            [(construction-cata c)        (c)]
                                            [_                             x])]
-    [(_ (x:cata     ((~literal ...) {bv ...} a*) . d)) 
-     (displayln 'rule1)
+    [(_ (x:cata     ((~literal ...) {bv ...} a*) . d)) ; <= TODO: find test case / is this case needed
      #'(cons (construct x) (construct (((... ...) {bv ...} a*) . d)))]
-    [(_ (x:variable ((~literal ...) {bv ...} a*) . d))
-     (displayln 'rule2)
-     #'(let ([tail         (construct (((... ...) {bv ...} a*) . d))])
-         (match x
-           [(construction-transformer t) (apply t tail)]
-           [_                             x]))]
     [(_ (x:cata d ...))                #'(cons (construct x) (construct (d ...)))]
     [(_ (x:variable d ...))            #'(let ([vds (construct (d ...))])
                                            (match x
                                              [(construction-transformer t) (apply t vds)]
                                              [_                            (cons x vds)]))]
     [(_ (((~literal ...) {bv ...} a*) . d))
-     (displayln 'rule3)
      (with-syntax ([(u ...) (filter unbound? (syntax->list #'(bv ...)))]
                    [(c ...) (filter cata?    (syntax->list #'(bv ...)))])
        (with-syntax ([(f ...) (map (λ (v) (expansion-cata-id (ref v)))
                                    (syntax->list #'(c ...)))])
-       #'(append (append-map (λ (bv ...)
-                               (with-variables (u ...)
-                                 (with-catas*  ([c f] ...)
-                                   (construct (a*)))))
-                             bv ...)
-                 (construct d))))]
+         #'(append (append-map (λ (bv ...)
+                                 (with-variables (bv ...)
+                                   (with-catas*  ([c f] ...)
+                                     (construct (a*)))))
+                               bv ...)
+                   (construct d))))]
     [(_ (a . d))                           #'(cons (construct a) (construct d))]
     [(_ ())                                #''()]
     [(_ #:catas {c ...} f . more)          #'(with-catas (c ...) f
                                                (construct . more))]
-    #;[(_ #:catas {c ...} f . more)        (with-syntax ([(t ...) (generate-temporaries #'(c ...))])
-                                             #'(let ([t (construction-cata (λ () (f c)))] ...)
-                                                 ; TODO: postpone the wrapping of the cata to 
-                                                 ;       the references of c
-                                                 ;       Why? This will handle ellipsis.
-                                                 (let ([c t] ...)
-                                                   (with-variables (c ...)
-                                                     (construct . more)))))]
     [(_ {v ...} . more)                #'(with-variables {v ...} (construct . more))]
     [_ (displayln stx)
        (error 'construct "got ~a" stx)]))
@@ -176,19 +160,19 @@
                   (with-variables (a)
                     (construct (x (... {a} (... {a} a)) z))))  ; read as  x a ... ... y
                 '(x 1 2 3 x y z z))
-  #;(check-equal? (let ([a '((1 2 3) (x y z))] [b '(11 12)])
-                    (with-variables (a)
-                      (construct (x (... {a b} (b (... {a} a))) z)))) ; reads as x (b a ...) ... z
-                  '(x (11 1 2 3) (12 x y z) z))
-  #;(check-equal? (let ([a '(((1 2 3) (4 5 6)) ((11 12 13) (14 15 16)))])
-                    (construct {a}
-                               ((... {a} (... {a} (... {a} a))))))
-                  '(1 2 3 4 5 6 11 12 13 14 15 16))
-  #;(check-equal? (let ([a '((1 2 3) (x y z))] [b '(11 12)])
-                    (with-variables (a b)
-                      (construct 
-                       (x (... {a b} (b (... {a} a))) z))))
-                  '(x (11 1 2 3) (12 x y z) z))
+  (check-equal? (let ([a '((1 2 3) (x y z))] [b '(11 12)])
+                  (with-variables (a)
+                    (construct (x (... {a b} (b (... {a} a))) z)))) ; reads as x (b a ...) ... z
+                '(x (11 1 2 3) (12 x y z) z))
+  (check-equal? (let ([a '(((1 2 3) (4 5 6)) ((11 12 13) (14 15 16)))])
+                  (construct {a}
+                             ((... {a} (... {a} (... {a} a))))))
+                '(1 2 3 4 5 6 11 12 13 14 15 16))
+  (check-equal? (let ([a '((1 2 3) (x y z))] [b '(11 12)])
+                  (with-variables (a b)
+                    (construct 
+                     (x (... {a b} (b (... {a} a))) z))))
+                '(x (11 1 2 3) (12 x y z) z))
   (check-equal? (let ([x 16])
                   (with-variables (x)
                     (with-catas (x) sqrt
@@ -200,31 +184,6 @@
                     (construct ((... {a} a)))))
                 '(1 2 3 4)))
 
-(define (simplify-lite s-exp)
-  (define recur simplify-lite)
-  (displayln s-exp)
-  (match s-exp
-    ; datums
-    [(? symbol? x)                          x]
-    [(list)                                 '()]
-    [(? number? n)                          n]
-    ; 
-    [(list 'quote d)                        (construct {d} d)]
-    [(list 'if e0 e1)                       (construct #:catas {e0 e1} recur
-                                                       (if e0 e1 (void)))]
-    [(list 'if e0 e1 e2)                    (construct {e0 e1 e2}
-                                                       (if e0 e1 e2))]
-    [(list 'begin e* en)                    (construct #:catas {e* en} recur
-                                                       (begin e* en))]
-    [(list 'lambda (list x* ...) 
-           body* body)                      (construct {x*} #:catas {body* body} recur
-                                                       (lambda x* (begin body* body)))]
-    [(list 'letrec (list (list x* e*))
-           body*  body)                     (construct {x*} #:catas {e* body* body} recur
-                                                       (letrec ([x* e*]) (begin body* body)))]
-    #;[(list e e*)                          (construct #:catas {e e*} recur
-                                                       (e e*))]
-    [_ (error 'simplify-litt "got ~a" s-exp)]))
 
 (define (simplify s-exp)
   (displayln s-exp)
@@ -240,13 +199,15 @@
     [(list 'if e0 e1 e2)                    (construct {e0 e1 e2}
                                                        (if e0 e1 e2))]
     [(list 'begin e* ... en)                (construct #:catas {e* en} simplify
-                                                       (begin e* ... en))]
+                                                       (begin (... {e*} e*) en))]
     [(list 'lambda (list x* ...) 
            body* ... body)                  (construct {x*} #:catas {body* body} simplify
-                                                       (lambda (x* ...) (begin body* ... body)))]
+                                                       (lambda ((... {x*} x*)) 
+                                                         (begin (... {body*} body*) body)))]
     [(list 'letrec (list (list x* e*) ...)
            body* ... body)                  (construct {x*} #:catas {e* body* body} simplify
-                                                       (letrec ([x* e*] ...) (begin body* ... body)))]
+                                                       (letrec ((... {x* e*} [x* e*]))
+                                                         (begin (... {body*} body*) body)))]
     [(list e e* ...)                        (construct #:catas {e e*} simplify
                                                        (e e* ...))]
     
