@@ -1,7 +1,8 @@
 #lang racket
-(require (for-syntax syntax/parse
-                     syntax/id-table)
-         racket/stxparam)
+; TODO:  (let ([x '(1 2 3)]) (construct  (z 1 x ...)))
+; Works: (let ([x '(1 2 3)]) (construct- (z 1 (... (x) x))))
+; Something makes construct- not recognized ... when constructed from construct.
+(require racket/stxparam (for-syntax syntax/parse syntax/id-table))
 
 ;;; Construction
 ;;;   construct is to construction as match is to deconstruction
@@ -25,7 +26,7 @@
 ;;; During expansion a compile time environment is need to keep
 ;;; track of which identifiers are bound as variables and catas.
 (define-syntax-parameter env    (make-immutable-free-id-table))
-(begin-for-syntax (struct expansion-cata         (id) #:transparent))
+(begin-for-syntax (struct expansion-cata (id) #:transparent))
 (struct construction-transformer (transform))
 (struct construction-cata        (cata))
 
@@ -103,7 +104,15 @@
     (pattern var:id
              #:fail-unless (cata? #'var) 
              "identifier bound to catamorphism in the construction environment expected"
-             #:attr f (cata? #'var))))
+             #:attr f (cata? #'var)))
+  
+  #;(define-syntax-class ooo
+      #:description "literal ..."
+      (pattern (~literal ...)))
+  
+  #;(define-syntax-class non-ooo
+    #:description "not literal ..."
+    (pattern (~not (~datum ...)))))  ; todo ~literal
 
 
 ;; Debug flag, if #t then construct will display useful info during expansion.
@@ -113,6 +122,7 @@
   (provide reverse-syntax)
   (require racket/match)
   (define (reverse-syntax stx)
+    ;(displayln (list 'reverse-syntax stx))
     (define loc (if (syntax? stx) stx #f))
     (define r reverse-syntax)
     (define as (if (syntax? stx) (syntax->list stx) stx))
@@ -140,16 +150,22 @@
   ;   input is in postfix form
   ;   a ...      ->  (... a)
   ;   a ... ...  ->  (... (... a))
+  (define-syntax-class non-ooo
+    #:description "not literal ..."
+    (pattern (~not (~datum ...))))  ; <== todo ~literal
   (define (rewrite-ellipsis stx)
-    (displayln (list 'rw stx))
-    (define r rewrite-ellipsis)
-    (with-syntax ([dots #'(... ...)])
-      (define (dots? x) (and (identifier? x) (free-identifier=? x #'dots)))
+    ;(displayln (list 're-in stx))
+    (with-syntax ([dots (datum->syntax stx '...)])
+      (define (dots? x) (and (identifier? x) 
+                             ; (eq? (syntax-e x) '...)
+                             (free-identifier=? x #'dots)))
       (define (r stx)
+        ;(displayln stx)
         (syntax-parse stx
-          [((~and a (~not (~literal ...))) . d)  
-           #`(a . #,(r #'d))]
+          [(a:non-ooo . d)
+           #`(#,(r #'a) . #,(r #'d))]
           [(a ...)
+           (displayln (list 'rewritting-...!))  ; <= test case
            (define as (syntax->list #'(a ...)))
            (define-values (ds a-more) (splitf-at as dots?))
            (cond
@@ -161,28 +177,100 @@
                  (define wrapped-a (for/fold ([a (r a)]) ([d ds])
                                      #`(#,a dots)))
                  #`(#,wrapped-a . #,(r more))]
-                ['() (error 'rewrite-ellipis "no s-expression after ellipsis")])])]
+                ['() (displayln stx)
+                     (error 'rewrite-ellipsis "no s-expression after ellipsis")])])]
           [(a . d) #`(#,(r #'a) . #,(r #'d))]
           [other   #'other]))
-      (r stx))))
+      (define out (r stx))
+      ;(displayln (list 're-out out))
+      out)))
+
+(module add-ellipsis-variables racket/base
+  (provide add-ellipsis-variables)
+  (require syntax/parse racket/list racket/match syntax/id-table)
+  (define empty-free-id-set (make-immutable-free-id-table))
+  (define (list->free-id-set vs)
+    (for/fold ([s empty-free-id-set]) ([v vs])
+      (free-id-table-set s v #t)))
+  (define (free-id-set . vs)
+    (list->free-id-set vs))
+  (define (free-id-set->list s)
+    (free-id-table-map s (λ (k v) k)))
+  (define (free-id-set-union vs ws)
+    (for/fold ([s ws]) ([v (free-id-set->list vs)])
+      (free-id-table-set s v #t)))
+  
+  (define (add-ellipsis-variables stx)
+    ;(displayln (list 'aev stx))
+    (define r add-ellipsis-variables)
+    (with-syntax ([dots (datum->syntax stx '...)])
+      (syntax-parse stx
+        [((~literal ...) a)
+         (define-values (vars ra) (r #'a))
+         (values vars
+                 (with-syntax ([vars (free-id-set->list vars)])
+                   (quasisyntax/loc stx (dots vars #,ra))))]
+        [x:id
+         (values (free-id-set #'x) #'x)]
+        [(a . d) 
+         (define-values (avars ra) (r #'a))
+         (define-values (dvars rd) (r #'d))
+         (values (free-id-set-union avars dvars)
+                 (quasisyntax/loc stx (#,ra . #,rd)))]
+        [_ 
+         (values empty-free-id-set stx)]))))
+
+(require (submod "." add-ellipsis-variables))
+
 (require (submod "." rewrite-ellipsis))
 (module+ test 
   (require (submod ".." rewrite-ellipsis))
   (define (r stx) (reverse-syntax (rewrite-ellipsis (reverse-syntax stx))))
-  ; (define (r stx) (rewrite-ellipsis (reverse-syntax stx)))
   (provide r)
   (with-syntax ([ooo #'(... ...)])
     (check-equal? (sd (r #'(1 2 3)))                         '(1 2 3))
-    (check-equal? (sd (r #'(1 x (... ...) 2)))               '(1 (... x) 2))
+    (check-equal? (sd (r #'(1 x ooo 2)))               '(1 (... x) 2))
     (check-equal? (sd (r #'(1 x (... ...) (... ...) 2)))     '(1 (... (... x)) 2))
     (check-equal? (sd (r #'(1 2 (3 x (... ...)) (... ...)))) '(1 2 (... (3 (... x)))))))
 
-  
+(require (for-syntax (submod "." rewrite-ellipsis)
+                     (submod "." add-ellipsis-variables)
+                     (submod "." reverse-syntax)))
 
+#;(define-syntax (construct stx)
+  (syntax-parse stx
+    [(_ . more)
+     ;(displayln (list 'in: stx #'more))
+     (define tmp (reverse-syntax
+                  (rewrite-ellipsis
+                   (reverse-syntax 
+                    #'more))))
+     ; (displayln (list 'tmp: tmp))
+     (define-values (_ more-)
+       (add-ellipsis-variables tmp))
+     (displayln more-)
+     (define out
+       (with-syntax ([more- more-]
+                     [construct- (datum->syntax stx 'construct-)])
+         (syntax/loc stx (construct- . more-))))
+     (displayln (list 'out: out))
+     out]))
+
+#;(define-syntax (construct stx)
+  (syntax-parse stx
+    [(_ . more)
+     #'(construct- . more)]))
+
+(define-syntax (construct stx)
+  (syntax-parse stx
+    [(_ . more)
+     #`(construct- . #,(reverse-syntax
+                        (reverse-syntax
+                         #'more)))]))
 
 ;; syntax (construct s-exp)
 ;;   construct a value according to the s-exp template
-(define-syntax (construct stx)
+(define-syntax (construct- stx)
   (when flag 
     (displayln stx)
     (displayln (free-id-table-map (syntax-parameter-value #'env) list)))
@@ -192,18 +280,19 @@
     [(_ x:unbound)                     #''x]
     [(_ x:cata)                        (with-syntax ([f (expansion-cata-id (ref #'x))])
                                          #'(f x))]
-    [(_ x:variable)                    #'(match x
+    [(_ x:variable)                    (syntax/loc #'x
+                                         (match x
                                            [(construction-transformer t) (t)]
                                            [(construction-cata c)        (c)]
-                                           [_                             x])]
+                                           [_                             x]))]
     [(_ (x:cata ((~literal ...) {bv ...} a*) . d)) ; <= TODO: find test case / is this case needed
-     #'(cons (construct x) (construct (((... ...) {bv ...} a*) . d)))]
-    [(_ (x:cata d ...))                #'(cons (construct x) (construct (d ...)))]
-    [(_ (x:variable d ...))            #'(let ([vds (construct (d ...))])
+     #'(cons (construct- x) (construct- (((... ...) {bv ...} a*) . d)))]
+    [(_ (x:cata d ...))                #'(cons (construct- x) (construct- (d ...)))]
+    [(_ (x:variable d ...))            #'(let ([vds (construct- (d ...))])
                                            (match x
                                              [(construction-transformer t) (apply t vds)]
                                              [_                            (cons x vds)]))]
-    [(_ (((~literal ...) {bv ...} a*) . d))
+    [(_ (((~literal ...) {bv ...} a*) . d)) ; <= TODO XXX ought to be (~literal ...)
      (with-syntax ([(u ...) (filter unbound? (syntax->list #'(bv ...)))]
                    [(c ...) (filter cata?    (syntax->list #'(bv ...)))])
        (with-syntax ([(f ...) (map (λ (v) (expansion-cata-id (ref v)))
@@ -211,18 +300,19 @@
          #'(append (append-map (λ (bv ...)
                                  (with-variables (bv ...)
                                    (with-catas*  ([c f] ...)
-                                     (construct (a*)))))
+                                     (construct- (a*)))))
                                bv ...)
-                   (construct d))))]
+                   (construct- d))))]
     ; [(_ ((~literal ...) . _))          (raise-syntax-error 'construct "illegal use of ..." stx)]
-    [(_ (a . d))                       #'(cons (construct a) (construct d))]
+    [(_ (a . d))                       #'(cons (construct- a) (construct- d))]
     [(_ ())                            #''()]
-    [(_ #:catas {c ...} f . more)      #'(with-catas (c ...) f (construct . more))]
-    [(_ {v ...} . more)                #'(with-variables {v ...} (construct . more))]
+    [(_ #:catas {c ...} f . more)      #'(with-catas (c ...) f (construct- . more))]
+    [(_ {v ...} . more)                #'(with-variables {v ...} (construct- . more))]
     
     [(_ datum)                         #'datum]
     [_ (displayln stx)
        (error 'construct "got ~a" stx)]))
+
 
 
 (module+ test (require rackunit)
@@ -294,7 +384,7 @@
       [(list 'quote d)                        (construct {d} d)]
       [(list 'if e0 e1)                       (construct #:catas {e0 e1} simplify
                                                          (if e0 e1 (void)))]
-      [(list 'if e0 e1 e2)                    (construct {e0 e1 e2}
+      [(list 'if e0 e1 e2)                    (construct #:catas {e0 e1 e2} simplify
                                                          (if e0 e1 e2))]
       [(list 'begin e* ... en)                (construct #:catas {e* en} simplify
                                                          (begin (... {e*} e*) en))]
@@ -312,6 +402,8 @@
       [_ (error 'simplify "got ~a" s-exp)]))
   
   (check-equal? (simplify '(if 1 (letrec ([x (if 2 3)]) 4 5)))
-                '(if 1 (letrec ((x (if 2 3 (void)))) (begin 4 5)) (void))))
+                '(if 1 (letrec ((x (if 2 3 (void)))) (begin 4 5)) (void)))
+  (check-equal? (simplify '(if (if 1 2 (if 3 4)) (if 5 6)))
+                '(if (if 1 2 (if 3 4 (void))) (if 5 6 (void)) (void))))
 
 ; (require (submod "." test))
