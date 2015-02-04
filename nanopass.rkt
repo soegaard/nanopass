@@ -12,9 +12,11 @@
 ;;;         - handle catamophisms in qq and/or construct ?
 ;;;         - check References to meta-variables in a production must be unique
 ;;;         - handle keywords that appear in multiple clauses such as (if e0 e1) and (if e0 e1 e2)
+;;;         - make test case that checks that two terminals can't have the same name
 
 ;;; TODO
 ;;;         - should ... be disallowed as a keyword?
+
 
 ;;; IDEAS (from akeep/nanopass)
 ;;;         * Added a prune-language form that, when given a language, starts traversing
@@ -89,7 +91,7 @@
 
 ;;; KEYWORDS
 ; The keywords entry and terminals are used by define-language.
-; Bind them to syntax signaling an error, if used outside define-language.
+; Bind them to syntax signaling an error, if used outside define-language:
 
 (define-syntax (entry stx)
   (raise-syntax-error 'entry "entry keyword used outside define-language" stx))
@@ -102,27 +104,32 @@
 
 
 ;;; STRUCTURES
-; The define-language constructs parses its input into
+; The define-language construct parses its input into
 ; structures representing terminals and nonterminals.
 
 (begin-for-syntax 
   (struct language    (stx name entry terminals nonterminals keywords+constructors
                            metavars-ht) #:transparent)
-  ; name is an identifier
-  ; entry is an identifier (of a nonterminal)
-  ; terminals and nonterminals are lists of terminals and nonterminals respectively
-  ; keywords+constructors is a list of elements of the form (list keyword struct-name)
+  ; The syntax of define-language is:
+  ;   (define-language language-name:id clause:lang-clause ...)
+  ; The language struct represents the language defined by define-language.  
+  ;   name                  is an identifier (the language-name)
+  ;   entry                 is an identifier (name of the start nonterminal)
+  ;   terminals             is a list of terminal structs
+  ;   nonterminals          is a list of nonterminal structs
+  ;   keywords+constructors is a list of elements of the form (list keyword struct-name)
   
   (struct terminal    (stx name meta-vars prettifier)  #;#:transparent)
-  ; name is an identifier, meta-vars is a list of identifiers and 
-  ; prettifier is a syntax-object representing an expression.
+  ;   name       is an identifier (the name of the terminal)
+  ;   meta-vars  is a list of identifiers
+  ;   prettifier is a syntax-object representing an expression.
   
   (struct nonterminal (stx name meta-vars productions) #;#:transparent #:mutable)
-  ; productions is a list of syntax-objects of the follwing forms:
-  ;   terminal-meta-var
-  ;   nonterminal-meta-var
-  ;   production-s-expression
-  ;   (keyword . production-s-expression)
+  ;   productions is a list of syntax-objects of the following forms:
+  ;     terminal-meta-var
+  ;     nonterminal-meta-var
+  ;     production-s-expression
+  ;     (keyword . production-s-expression)
   ; where keyword is neither type of meta var.
   
   (struct production (stx) #:transparent)
@@ -221,8 +228,13 @@
     (format-id ctx "~a:~a:~a" lang nt prod #:source src))
   
   (require (only-in srfi/13 string-reverse))
+  ; strip-meta-var-suffix : identifier-or-symbol-or-string -> same-type-as-input
   (define (strip-meta-var-suffix s)
-    (define (strip-string s)
+    ; See description of meta variables below.
+    ;   If x is declared as a metavar, then x1, x2,... x?, x1?, ... are also meta variables.
+    ;   string-string removes a suffix consisting of digits and question marks
+    ;   to get the base name of the metavars.        
+    (define (strip-string s) ; strip-string : string -> string
       (match (regexp-match #rx"(^[0-9*?]*).*$" (string-reverse s))
         [(list _ suffix-reversed)
          (define m (string-length s))
@@ -246,7 +258,7 @@
 ;;; METAVARIABLES
 ; Each terminal and nonterminal has an associated set of (normally short) names
 ; used to refer to them in productions. These abbreviations are called metavariables.
-; The producedure parse-defined-language produce a hash table which maps
+; The procedure parse-defined-language produces a hash table which maps
 ; metavariables (identifiers) to their terminal or nonterminal (represented as syntax-objects).
 (begin-for-syntax
   (define (meta-vars-ref ht v)
@@ -259,8 +271,6 @@
   (define (register-meta-var ht v a)
     (cond [(meta-vars-ref ht v) (raise-meta-var-error v)]
           [else                 (meta-vars-set! ht v a)]))
-  
-  
   
   ; The error message will highlight the second use of a meta variable 
   (define (raise-meta-var-error v)
@@ -1122,9 +1132,9 @@
   (define-language Lsrc
     (entry Expr)
     (terminals
-     (uvar (x))
-     (primitive (pr))
-     (datum (d)))
+     (uvar (x))          ; unique variables
+     (primitive (pr))    ; primitives
+     (datum (d)))        ; datums
     (Expr (e body)
           (quote d)
           (if1 e0 e1)
@@ -1138,7 +1148,7 @@
           (call e e* ...)
           x))
   
-  (define-language L0 
+  (define-language L0
     (terminals
      (uvar (x))
      (datum (d))
@@ -1157,7 +1167,6 @@
           (letrec ((x e) ...) body1 ... body2)))
   
   ; Test that constructors exist and have correct number of fields
-  
   (check-not-false (L0:Expr:datum 42))
   (check-not-false (L0:Expr:var 'x))
   (check-not-false (L0:Expr:primapp '+ '(1 2)))
