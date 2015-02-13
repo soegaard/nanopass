@@ -1,15 +1,20 @@
 #lang racket
+;;; TODO XXX (splitf as dots?) => (splitf as non-dots?)
+;;; TODO XXX Check that rewrite-ellipsis works.
 ; TODO:  (let ([x '(1 2 3)]) (construct  (z 1 x ...)))
 ; Works: (let ([x '(1 2 3)]) (construct- (z 1 (... (x) x))))
-; Something makes construct- not recognized ... when constructed from construct.
+; Something makes construct- not recognize ... when constructed from construct.
 (require racket/stxparam (for-syntax syntax/parse syntax/id-table))
 
+;; Debug flag, if #t then construct will display useful info during expansion.
+(begin-for-syntax (define flag #f) (set! flag #f))
+
 ;;; Construction
-;;;   construct is to construction as match is to deconstruction
+;;;   Idea: construct is to construction as match is to deconstruction
 ;;;   For datums and unbound identifiers, construct works like quote.
 
 ;; Datums
-; (construct 1)             => 1
+;    (construct 1)             => 1
 
 ; For x unbound in the construction environment:
 ;    (construct x)             => 'x
@@ -79,11 +84,11 @@
 
 (begin-for-syntax 
   ;; References to variables in the construction environment
-  (define (ref id) (free-id-table-ref (syntax-parameter-value #'env) id #f))
+  (define (ref id)       (free-id-table-ref (syntax-parameter-value #'env) id #f))
   (define (bound? id)    (ref id))
   (define (unbound? id)  (not (bound? id)))
   (define (variable? id) (eq? (ref id) 'variable))
-  (define (cata? id) (expansion-cata? (ref id)))
+  (define (cata? id)     (expansion-cata? (ref id)))
   
   ;; Syntax classes for the various variable types
   (define-syntax-class variable
@@ -115,23 +120,24 @@
     (pattern (~not (~datum ...)))))  ; todo ~literal
 
 
-;; Debug flag, if #t then construct will display useful info during expansion.
-(begin-for-syntax (define flag #f) (set! flag #f))
 
 (module reverse-syntax racket
   (provide reverse-syntax)
   (require racket/match)
   (define (reverse-syntax stx)
-    ;(displayln (list 'reverse-syntax stx))
+    (displayln (list 'reverse-syntax-in stx))
     (define loc (if (syntax? stx) stx #f))
     (define r reverse-syntax)
     (define as (if (syntax? stx) (syntax->list stx) stx))
+    (define out
     (if (list? as) 
         (datum->syntax loc (reverse (map r as)))
         (let ()
           (match (if (syntax? stx) (syntax-e stx) stx)
             [(cons a d) (datum->syntax loc (cons (r d) (r a)))]
-            [_          stx])))))
+            [_          stx]))))
+    (displayln (list 'reverse-syntax-out out))
+    out))
 
 (require (for-syntax (submod "." reverse-syntax)))
 
@@ -154,11 +160,11 @@
     #:description "not literal ..."
     (pattern (~not (~datum ...))))  ; <== todo ~literal
   (define (rewrite-ellipsis stx)
-    ;(displayln (list 're-in stx))
+    (displayln (list 're-in stx))
     (with-syntax ([dots (datum->syntax stx '...)])
       (define (dots? x) (and (identifier? x) 
-                             ; (eq? (syntax-e x) '...)
-                             (free-identifier=? x #'dots)))
+                             (eq? (syntax-e x) '...)
+                             #;(free-identifier=? x #'dots)))   ; TODO XXX
       (define (r stx)
         ;(displayln stx)
         (syntax-parse stx
@@ -177,7 +183,7 @@
                  (define wrapped-a (for/fold ([a (r a)]) ([d ds])
                                      #`(#,a dots)))
                  #`(#,wrapped-a . #,(r more))]
-                ['() (displayln stx)
+                ['() (displayln (list stx ds a-more))
                      (error 'rewrite-ellipsis "no s-expression after ellipsis")])])]
           [(a . d) #`(#,(r #'a) . #,(r #'d))]
           [other   #'other]))
@@ -229,7 +235,7 @@
   (provide r)
   (with-syntax ([ooo #'(... ...)])
     (check-equal? (sd (r #'(1 2 3)))                         '(1 2 3))
-    (check-equal? (sd (r #'(1 x ooo 2)))               '(1 (... x) 2))
+    (check-equal? (sd (r #'(1 x ooo 2)))                     '(1 (... x) 2))
     (check-equal? (sd (r #'(1 x (... ...) (... ...) 2)))     '(1 (... (... x)) 2))
     (check-equal? (sd (r #'(1 2 (3 x (... ...)) (... ...)))) '(1 2 (... (3 (... x)))))))
 
@@ -237,7 +243,7 @@
                      (submod "." add-ellipsis-variables)
                      (submod "." reverse-syntax)))
 
-#;(define-syntax (construct stx)
+(define-syntax (construct stx)
   (syntax-parse stx
     [(_ . more)
      ;(displayln (list 'in: stx #'more))
@@ -261,7 +267,7 @@
     [(_ . more)
      #'(construct- . more)]))
 
-(define-syntax (construct stx)
+#;(define-syntax (construct stx)
   (syntax-parse stx
     [(_ . more)
      #`(construct- . #,(reverse-syntax
@@ -334,8 +340,9 @@
                 (foo 42))
   (check-equal? (let ([Foo (construction-transformer (λ v (apply foo v)))])
                   (with-variables (Foo)
+                    ; here the first foo should become a symbol
                     (construct (foo (Foo foo)))))
-                `(foo, (foo 'foo)))
+                `(foo ,(foo 'foo)))
   (check-equal? (let ([a '(1 2 3)])
                   (with-variables (a)
                     (construct (x (... {a} a) y))))            ; read as  x a ... y
