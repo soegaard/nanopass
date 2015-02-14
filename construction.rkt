@@ -1,4 +1,18 @@
 #lang racket
+;;; NOTES
+; On depths and elipse:
+;   For syntax-rules the depth of a variable is determined 
+;   during pattern matching. For construct there are 
+;   no prior information on the depth of a variable.
+;   What should (construct (a ...)) do?
+;   Can this function be used?
+
+(define (depth x)
+  (match x
+    ['()           0]
+    [(list a* ...) (+ 1 (apply min (map depth a*)))]
+    [_             0]))
+
 ;;; TODO XXX (splitf as dots?) => (splitf as non-dots?)
 ;;; TODO XXX Check that rewrite-ellipsis works.
 ; TODO:  (let ([x '(1 2 3)]) (construct  (z 1 x ...)))
@@ -234,16 +248,16 @@
   (define (r stx) (reverse-syntax (rewrite-ellipsis (reverse-syntax stx))))
   (provide r)
   (with-syntax ([ooo #'(... ...)])
-    (check-equal? (sd (r #'(1 2 3)))                         '(1 2 3))
-    (check-equal? (sd (r #'(1 x ooo 2)))                     '(1 (... x) 2))
-    (check-equal? (sd (r #'(1 x (... ...) (... ...) 2)))     '(1 (... (... x)) 2))
-    (check-equal? (sd (r #'(1 2 (3 x (... ...)) (... ...)))) '(1 2 (... (3 (... x)))))))
+    (check-equal? (sd (r #'(1 2 3)))             '(1 2 3))
+    (check-equal? (sd (r #'(1 x ooo 2)))         '(1 (... x) 2))
+    (check-equal? (sd (r #'(1 x ooo ooo 2)))     '(1 (... (... x)) 2))
+    (check-equal? (sd (r #'(1 2 (3 x ooo) ooo))) '(1 2 (... (3 (... x)))))))
 
 (require (for-syntax (submod "." rewrite-ellipsis)
                      (submod "." add-ellipsis-variables)
                      (submod "." reverse-syntax)))
 
-(define-syntax (construct stx)
+#;(define-syntax (construct stx)
   (syntax-parse stx
     [(_ . more)
      ;(displayln (list 'in: stx #'more))
@@ -267,7 +281,7 @@
     [(_ . more)
      #'(construct- . more)]))
 
-#;(define-syntax (construct stx)
+(define-syntax (construct stx)
   (syntax-parse stx
     [(_ . more)
      #`(construct- . #,(reverse-syntax
