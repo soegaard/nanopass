@@ -1,24 +1,48 @@
 #lang racket
 (require "nanopass.rkt")
 
-; Nanopass is a framework that makes it easy to construct 
-; compilers with many passes.
+;;; TUTORIAL PART 1
 
-; As an example, let's consider a source language, Lsrc, 
-; with primitives +,-,*,/ :
-(define (primitive? x) (and (symbol? x) (member x '(+ - * /)) #t))
+;;; Nanopass is a framework that makes it easy to construct 
+;;; compilers with many passes.
 
-; The only datums are numbers.
-(define (datum? x)     (number? x))
+;;; Given a grammar for a language, Nanopass will define
+;;; structures that can represent a parsed program.
+;;; Nanopass also provides support for defining transformations
+;;; from one intermediate language to another.
 
-; The grammar is:
+;;; In this first part of the tutorial, we will see how 
+;;; a language is defined with define-language and how
+;;; parsing and unparsing to and from s-expressions work.
 
-;  Expr ::= d              ; where d        is a Datum       (i.e. a number)
-;       ::= (pr e1 e2)     ; where pr       is a Primitive 
-;                          ;   and e1, e2 are an Expr
-;
+;;; As an example, let's consider a simple source language, Lsrc.
+;;; This is an example of a program:
+;;;     (+ 1 (* 2 3))
+;;; Numbers are the only datums.
+;;; Applications are restricted to applications of the primitives +,-,*,/.
 
-(define-language L                ; Lsrc is the name of the language
+;;; The grammar of Lsrc is:
+
+;;;  Expr ::= d                   ; where d        is a datum       (i.e. a number)
+;;;       ::= (call pr e1 e2)     ; where pr       is a primitive   (call is the symbol call)
+;;;                               ;   and e1, e2 are an Expr
+
+;;; The grammar makes use of two types of terminals `primitive` and `datum`.
+;;; For each terminal we need to define a predicate that recognizes
+;;; terminal values. The predicates have the same name as the literal with
+;;; followed by a question mark.
+
+(define (datum? x)  
+  (number? x))                  ; The only datums are numbers.
+
+(define (primitive? x) 
+  (and (symbol? x)              ; identifiers are represented as symbols
+       (member x '(+ - * /))    ; the available primitives
+       #t))
+
+;;; The language Lsrc can now be defined.
+
+(define-language Lsrc                ; Lsrc is the name of the language
   (entry Expr)                       ; A program is an Expr
   (terminals                         ; There are two types of terminals:
    (datum     (d))                   ;   datums      begin with d
@@ -37,7 +61,13 @@
 ;   3. L-unparse  which converts the structure representation back to s-expressions.
 
 ; Example:
-(L-parse  '(call + 41 42))  ; '#s(L:Expr:call + 41 42)
-(L-unparse 
- (L-parse '(call + 41 42))) ; '(call + 41 42)
+;   Let's parse an s-expression and see what the structure representation look like:
+
+    (L-parse  '(call + 41 42))  ; '#s(L:Expr:call + 41 42)
+
+
+;   Unparse it to get a value that prints nicely.
+
+    (L-unparse 
+      (L-parse '(call + 41 42))) ; '(call + 41 42)
 
