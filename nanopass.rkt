@@ -1,5 +1,8 @@
 #lang racket
 (module+ test (require rackunit))
+(provide define-language entry terminals) 
+
+; FIX NOW:  parse or unparse where se1 is an ellipsis.
 
 ;;; TODO
 ;;;   done  - parse define-language into structures
@@ -364,8 +367,8 @@
        ;;        (struct s-exp-production production ())
        
        ;; 6.a Processing the productions in syntax object form is easier,
-       ;;     we rewrite ellipsis patterns to prefix i.e. pat ... besomes (ellipsis pat)
-       (define (maybe?    stx) (and (identifier? stx) (eq? (syntax-e stx) 'maybe)))
+       ;;     we rewrite ellipsis patterns to prefix i.e. pat ... becomes (ellipsis pat)
+       (define (maybe? stx) (and (identifier? stx) (eq? (syntax-e stx) 'maybe)))
        (define (make-ellipsis-prefix se)
          (define (mvar? v) (meta-var? meta-vars-ht v))
          (define (ellipsis? stx) (eq? (syntax-e stx) '...))
@@ -373,7 +376,7 @@
            (match (or (syntax-pair? se) se)
              [(? identifier? v)               (if (meta-var? meta-vars-ht v) v (error 'here "foo"))]
              [(? syntax? s)                   (recur (syntax-e s))]
-             [(list (? maybe?) (? mvar?))     se]   ; todo: ntroduce maybe struct ?
+             [(list (? maybe?) (? mvar?))     se]   ; todo: introduce maybe struct ?
              [(cons (? maybe?) _)             (raise-syntax-error 
                                                'define-language "(maybe meta-var) expected" se)]
              [(list se0 (? ellipsis?))        (list (ellipsis (recur se0)))]
@@ -491,7 +494,7 @@
 (define-syntax (define-language stx)
   (define (syntax-error error-msg [stx stx]) (raise-syntax-error 'define-language error-msg stx))
   (syntax-parse stx
-    [(define-language language-name:id clause:lang-clause ...)
+    [(_define-language language-name:id clause:lang-clause ...)
      ;; 0. Parse the define-language into a language struct.
      (define parsed-lang (parse-define-language stx))
      ; (displayln (list 'parsed-lang parsed-lang)) (newline)
@@ -538,6 +541,7 @@
      ;; In its body there are parsers for each nonterminal (in the example Expr).
      ;; The body of parse-L simply calls the parser associated with the entry nonterminal.
      
+     ;; Example of the generated code (or a close approximation thereof)
      #;(define (parse-L se)
          ; 1) define parsers for each nonterminal
          ; 2) call the entry parser
@@ -611,7 +615,7 @@
                  ; parse-nt : s-exp [thunk] -> (or <lang:nt:keyword structure> (failure))
                  ;   parse the s-exp and return a struct instance,
                  ;   if parsing fails invoke the failure thunk
-                 (define (parse-nt se [failure (λ () (error 'parse-nt "got: ~a" se))])
+                 (define (parse-nt se [failure (λ () (error 'parse-nt "no matching production: ~a" se))])
                    (match se 
                      clause ...
                      [else (failure)]))
@@ -681,6 +685,7 @@
            ; The recursive call to parser a subexpression depends on the ellipsis
            ; depth d of the pattern variable. We therefore need to keep track of d.       
            (define (recur se d) ; d=depth
+             (displayln (list 'recur se d))
              (with-syntax ([ooo #'(... ...)])
                (match (if (syntax-pair? se) (syntax-e se) se)
                  [(? identifier? x)
@@ -713,11 +718,15 @@
                           (append-map (λ(se) (recur se d)) se*)
                           (recur sen d))]
                  [(cons se0 se1) 
-                  (list #`(cons #,@(recur se0 d) #,@(recur se1 d)))]
-                 ['() '()]
-                 [_ (error 'production-s-exp->match-pattern "gotx: ~a" se)])))
+                  ; Note: The s-expression se0 and se1 might contain ellipsis.
+                  ;       Well - the second might.
+                  (define r0 (recur se0 d))
+                  (define r1 (recur se1 d))
+                  (list #`(let ([e0 #,@r0] [e1 (list #,@r1)])
+                            (cons e0 (apply append e1))))]  ; YYY
+                 ['() '()] 
+                 [_ (error 'production-s-exp->match-template "gotx: ~a" se)])))
            (recur se 0))
-         
          
          ;   production-s-expr = meta-variable
          ;                     | (maybe meta-variable)
@@ -765,11 +774,13 @@
                        [parse-lang     (format-id stx "~a-parse" lang-name)]
                        [parse-entry    (format-id stx "parse-~a" entry-name)])
            (define it
-             #'(define (parse-lang se)
+             #'(begin
+                 (provide parse-lang)
+                 (define (parse-lang se)
                  ; one parser for each nonterminal (that throws exceptions on parse errors)
                  parse-nt ...
                  ; start parsing at the nonterminal named entry
-                 (parse-entry se)))
+                 (parse-entry se))))
            ; (displayln it)
            it)))
      
@@ -818,9 +829,9 @@
                    (list #'[(list non-keyword more (... ...))
                             `(,non-keyword ,@(map u more))]
                          #;#'[(cons non-keyword more) 
-                              `(,non-keyword . ,(u more))]
-                         ; #'['() '()])
-                         ))]                
+                            `(,non-keyword . ,(u more))]
+                         ;#'['() '()]
+                         ))]
                 [_ (error 'unparser-definition-stx "internal error, got: ~a" p)]))))
          (define unparser-clauses 
            (append (append-map construct-unparse-clause nonterminals)
@@ -1028,9 +1039,6 @@
 
 
 
-
-
-
 ; remove-one-armed-if : Lsrc (e) -> L1 ()
 (define (pass-remove-one-armed-if e)
   ; Expr : Expr (e)    ; this input e is an Expr
@@ -1181,7 +1189,11 @@
   (check-equal? (with-language L0 Expr (construct (begin '(4) (if 1 2 3))))
                 (L0:Expr:begin '(4) (L0:Expr:if 1 2 3)))
   ; Test parsing and unparsing
-  (define (parse/unparse d) (equal? (Lsrc-unparse (Lsrc-parse d)) d))
+  (define (parse/unparse d) 
+    (or (equal? (Lsrc-unparse (Lsrc-parse d)) d)
+        (and (displayln (Lsrc-parse d))
+             (displayln (Lsrc-unparse (Lsrc-parse d)))
+             #f)))
   (check-true (parse/unparse ''1))
   (check-true (parse/unparse 'x))
   (check-true (parse/unparse '(+ '1 '2 '3)))
@@ -1203,3 +1215,15 @@ Lsrc:Expr:if
 (L1-unparse
  (pass-remove-one-armed-if
   (Lsrc-parse '(begin '1 '2))))
+
+#;(define-language L                ; Lsrc is the name of the language
+  (entry Expr)                       ; A program is an Expr
+  (terminals                         ; There are two types of terminals:
+   (datum     (da))                   ;   datums      begin with d
+   (primitive (prim)))                 ;   primitives  begin with pr
+  ;                                  ; There is only one non-terminal:
+  (Expr (ex)                          ;   Expr        begin with e
+        ;                            ;   which has two productions
+        da                            ;     a single datum
+        (call prim ex1 ex2)
+        (prim ex1 ex2 ...)))
