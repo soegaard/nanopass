@@ -17,11 +17,11 @@
 
 ;;; As an example, let's consider a simple source language, Lsrc.
 ;;; This is an example of a program:
-;;;     (+ 1 (* 2 3))
+;;;     (call + 1 (call * 2 3))
 ;;; Numbers are the only datums.
 ;;; Applications are restricted to applications of the primitives +,-,*,/.
 
-;;; The grammar of Lsrc is:
+;;; The grammar of Ltut1 is:
 
 ;;;  Expr ::= d                   ; where d        is a datum       (i.e. a number)
 ;;;       ::= (call pr e1 e2)     ; where pr       is a primitive   (call is the symbol call)
@@ -40,9 +40,9 @@
        (member x '(+ - * /))    ; the available primitives
        #t))
 
-;;; The language Lsrc can now be defined.
+;;; The language Ltut1 can now be defined.
 
-(define-language Lsrc                ; Lsrc is the name of the language
+(define-language Ltut1               ; Ltut1 is the name of the language
   (entry Expr)                       ; A program is an Expr
   (terminals                         ; There are two types of terminals:
    (datum     (d))                   ;   datums      begin with d
@@ -53,21 +53,21 @@
         d                            ;     a single datum
         (call pr e1 e2)))            ;     application of a primitive to two arguments
 
-; The definition (define-language LSrc ...) will define:
+; The definition (define-language Ltut1 ...) will define:
 ;   1. Each non-terminals is represented as a struct.
 ;      The non-terminal that starts with the keyword call is represented as:
-;       (struct Lsrc:Expr:call (pr e1 e2))
-;   2. L-parse    which parses an s-expression to the structure representation
-;   3. L-unparse  which converts the structure representation back to s-expressions.
+;       (struct Ltut1:Expr:call (pr e1 e2))
+;   2. Ltut1-parse    which parses an s-expression to the structure representation
+;   3. Ltut1-unparse  which converts the structure representation back to s-expressions.
 
 ; Example:
 ;   Let's parse an s-expression and see what the structure representation look like:
 
-    (L-parse  '(call + 41 42))  ; '#s(L:Expr:call + 41 42)
+    (Ltut1-parse  '(call + 41 42))  ; '#s(Ltut1:Expr:call + 41 42)
 
 
 ;   Unparse it to get a value that prints nicely.
 
-    (L-unparse 
-      (L-parse '(call + 41 42))) ; '(call + 41 42)
+    (Ltut1-unparse 
+      (Ltut1-parse '(call + 41 42))) ; '(call + 41 42)
 
